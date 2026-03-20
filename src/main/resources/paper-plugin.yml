@@ -1,0 +1,33 @@
+name: RegionMusic
+version: '${version}'
+main: dev.oakheart.regionmusic.RegionMusic
+description: 'Play music when players enter WorldGuard regions.'
+api-version: '1.21.10'
+authors:
+  - Loralon
+website: https://github.com/LoralonMC/RegionMusic
+dependencies:
+  server:
+    WorldGuard:
+      load: BEFORE
+      required: true
+    PlaceholderAPI:
+      load: BEFORE
+      required: false
+permissions:
+  regionmusic.*:
+    description: 'Grants all RegionMusic permissions'
+    default: op
+    children:
+      regionmusic.admin: true
+      regionmusic.toggle: true
+      regionmusic.volume: true
+  regionmusic.admin:
+    description: 'Allows use of RegionMusic admin commands (reload, toggle others, preview, list)'
+    default: op
+  regionmusic.toggle:
+    description: 'Allows players to toggle region music on/off for themselves'
+    default: true
+  regionmusic.volume:
+    description: 'Allows players to view and set their personal music volume'
+    default: true
