@@ -4,6 +4,7 @@ import dev.oakheart.regionmusic.RegionConfig.VariantType;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
@@ -65,12 +66,10 @@ public class MusicManager {
 
         // Send now playing message
         RegionTrack currentTrack = activeTracks.get(startIndex);
-        plugin.getMessageManager().sendNowPlaying(
-                player,
-                regionConfig.regionId(),
-                regionConfig.worldName(),
-                currentTrack.displayName()
-        );
+        plugin.getMessageManager().send(player, "now-playing",
+                Placeholder.unparsed("region", regionConfig.regionId()),
+                Placeholder.unparsed("world", regionConfig.worldName()),
+                Placeholder.unparsed("sound", currentTrack.displayName()));
 
         plugin.debug("Started music for " + player.getName() + ": " + currentTrack.soundKeyString()
                 + " in region " + regionConfig.regionId()
@@ -88,7 +87,9 @@ public class MusicManager {
             stopMusicImmediately(player);
             playerStates.remove(playerId);
 
-            plugin.getMessageManager().sendMusicStopped(player, regionId, worldName);
+            plugin.getMessageManager().send(player, "music-stopped",
+                    Placeholder.unparsed("region", regionId),
+                    Placeholder.unparsed("world", worldName));
             plugin.debug("Stopped music for " + player.getName());
         }
     }

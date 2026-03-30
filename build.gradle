@@ -7,6 +7,7 @@ group = 'dev.oakheart'
 version = '1.0.0'
 
 repositories {
+    mavenLocal()
     mavenCentral()
     maven {
         name = "papermc-repo"
@@ -27,6 +28,7 @@ dependencies {
     compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.10")
     compileOnly("me.clip:placeholderapi:2.11.6")
     implementation("org.bstats:bstats-bukkit:3.1.0")
+    implementation("dev.oakheart:oakheart-core:1.1.0")
 }
 
 java {
@@ -43,13 +45,17 @@ processResources {
     def props = [version: version]
     inputs.properties props
     filteringCharset 'UTF-8'
-    filesMatching(['plugin.yml', 'paper-plugin.yml']) {
+    filesMatching('paper-plugin.yml') {
         expand props
     }
 }
 
 shadowJar {
     relocate 'org.bstats', 'dev.oakheart.regionmusic.bstats'
+    relocate 'dev.oakheart.config', 'dev.oakheart.regionmusic.libs.config'
+    relocate 'dev.oakheart.message', 'dev.oakheart.regionmusic.libs.message'
+    relocate 'dev.oakheart.command', 'dev.oakheart.regionmusic.libs.command'
+    relocate 'dev.oakheart.util', 'dev.oakheart.regionmusic.libs.util'
     archiveClassifier.set('')
 }
 

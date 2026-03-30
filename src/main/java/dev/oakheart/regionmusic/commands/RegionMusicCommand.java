@@ -5,6 +5,8 @@ import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+import dev.oakheart.command.CommandRegistrar;
+import dev.oakheart.message.MessageManager;
 import dev.oakheart.regionmusic.MusicManager;
 import dev.oakheart.regionmusic.RegionConfig;
 import dev.oakheart.regionmusic.RegionMusic;
@@ -13,13 +15,10 @@ import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
-import io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager;
-import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.Plugin;
 
 import java.util.List;
 import java.util.Map;
@@ -34,39 +33,38 @@ public class RegionMusicCommand {
     }
 
     public void register() {
-        LifecycleEventManager<Plugin> manager = plugin.getLifecycleManager();
-        manager.registerEventHandler(LifecycleEvents.COMMANDS, event -> {
-            Commands commands = event.registrar();
+        LiteralCommandNode<CommandSourceStack> rootNode = Commands.literal("regionmusic")
+                .executes(ctx -> {
+                    if (ctx.getSource().getSender().hasPermission("regionmusic.admin")) {
+                        sendHelp(ctx.getSource().getSender());
+                    } else {
+                        sendPlayerHelp(ctx.getSource().getSender());
+                    }
+                    return Command.SINGLE_SUCCESS;
+                })
+                .then(buildReloadCommand())
+                .then(buildToggleCommand())
+                .then(buildStatusCommand())
+                .then(buildVolumeCommand())
+                .then(buildPreviewCommand())
+                .then(buildListCommand())
+                .then(Commands.literal("help")
+                        .executes(ctx -> {
+                            if (ctx.getSource().getSender().hasPermission("regionmusic.admin")) {
+                                sendHelp(ctx.getSource().getSender());
+                            } else {
+                                sendPlayerHelp(ctx.getSource().getSender());
+                            }
+                            return Command.SINGLE_SUCCESS;
+                        })
+                )
+                .build();
 
-            LiteralCommandNode<CommandSourceStack> rootNode = Commands.literal("regionmusic")
-                    .executes(ctx -> {
-                        if (ctx.getSource().getSender().hasPermission("regionmusic.admin")) {
-                            sendHelp(ctx.getSource());
-                        } else {
-                            sendPlayerHelp(ctx.getSource());
-                        }
-                        return Command.SINGLE_SUCCESS;
-                    })
-                    .then(buildReloadCommand())
-                    .then(buildToggleCommand())
-                    .then(buildStatusCommand())
-                    .then(buildVolumeCommand())
-                    .then(buildPreviewCommand())
-                    .then(buildListCommand())
-                    .then(Commands.literal("help")
-                            .executes(ctx -> {
-                                if (ctx.getSource().getSender().hasPermission("regionmusic.admin")) {
-                                    sendHelp(ctx.getSource());
-                                } else {
-                                    sendPlayerHelp(ctx.getSource());
-                                }
-                                return Command.SINGLE_SUCCESS;
-                            })
-                    )
-                    .build();
+        CommandRegistrar.register(plugin, rootNode, "Regional music control", List.of("rmusic"));
+    }
 
-            commands.register(rootNode, "Regional music control", List.of("rmusic"));
-        });
+    private MessageManager messages() {
+        return plugin.getMessageManager();
     }
 
     // --- Reload ---
@@ -77,12 +75,11 @@ public class RegionMusicCommand {
                 .executes(ctx -> {
                     boolean success = plugin.reload();
                     if (success) {
-                        plugin.getMessageManager().sendConfigReloaded(
-                                ctx.getSource().getSender(),
-                                plugin.getConfigManager().countConfiguredRegions()
-                        );
+                        messages().sendCommand(ctx.getSource().getSender(), "config-reloaded",
+                                Placeholder.unparsed("count",
+                                        String.valueOf(plugin.getConfigManager().countConfiguredRegions())));
                     } else {
-                        plugin.getMessageManager().sendReloadFailed(ctx.getSource().getSender());
+                        messages().sendCommand(ctx.getSource().getSender(), "reload-failed");
                     }
                     return Command.SINGLE_SUCCESS;
                 })
@@ -95,31 +92,28 @@ public class RegionMusicCommand {
         return Commands.literal("toggle")
                 .requires(source -> source.getSender().hasPermission("regionmusic.toggle"))
                 .executes(ctx -> {
-                    // Self-toggle — player only
                     CommandSender sender = ctx.getSource().getSender();
                     if (!(sender instanceof Player player)) {
-                        plugin.getMessageManager().sendRaw(sender,
-                                "<#D89B6A>Usage: <#FCD472>/regionmusic toggle \\<player> [on|off]");
+                        messages().sendCommand(sender, "console-toggle-usage");
                         return Command.SINGLE_SUCCESS;
                     }
                     boolean enabled = plugin.getPlayerDataManager().toggle(player.getUniqueId());
                     if (enabled) {
                         plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
-                        plugin.getMessageManager().sendMusicEnabled(player);
+                        messages().sendCommand(player, "music-enabled");
                     } else {
                         plugin.getMusicManager().stopMusic(player);
-                        plugin.getMessageManager().sendMusicDisabled(player);
+                        messages().sendCommand(player, "music-disabled");
                     }
                     return Command.SINGLE_SUCCESS;
                 })
-                // Self on/off
                 .then(Commands.literal("on")
                         .requires(source -> source.getSender() instanceof Player)
                         .executes(ctx -> {
                             Player player = (Player) ctx.getSource().getSender();
                             plugin.getPlayerDataManager().enable(player.getUniqueId());
                             plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
-                            plugin.getMessageManager().sendMusicEnabled(player);
+                            messages().sendCommand(player, "music-enabled");
                             return Command.SINGLE_SUCCESS;
                         })
                 )
@@ -129,11 +123,10 @@ public class RegionMusicCommand {
                             Player player = (Player) ctx.getSource().getSender();
                             plugin.getPlayerDataManager().disable(player.getUniqueId());
                             plugin.getMusicManager().stopMusic(player);
-                            plugin.getMessageManager().sendMusicDisabled(player);
+                            messages().sendCommand(player, "music-disabled");
                             return Command.SINGLE_SUCCESS;
                         })
                 )
-                // Admin: toggle for another player (console-accessible)
                 .then(Commands.argument("player", ArgumentTypes.player())
                         .requires(source -> source.getSender().hasPermission("regionmusic.admin"))
                         .executes(ctx -> {
@@ -141,7 +134,7 @@ public class RegionMusicCommand {
                             List<Player> players = resolver.resolve(ctx.getSource());
 
                             if (players.isEmpty()) {
-                                plugin.getMessageManager().sendPlayerNotFound(ctx.getSource().getSender());
+                                messages().sendCommand(ctx.getSource().getSender(), "player-not-found");
                                 return Command.SINGLE_SUCCESS;
                             }
 
@@ -150,10 +143,12 @@ public class RegionMusicCommand {
 
                             if (enabled) {
                                 plugin.getRegionListener().clearPlayerRegion(target.getUniqueId());
-                                plugin.getMessageManager().sendMusicEnabledFor(ctx.getSource().getSender(), target.getName());
+                                messages().sendCommand(ctx.getSource().getSender(), "music-enabled-for",
+                                        Placeholder.unparsed("player", target.getName()));
                             } else {
                                 plugin.getMusicManager().stopMusic(target);
-                                plugin.getMessageManager().sendMusicDisabledFor(ctx.getSource().getSender(), target.getName());
+                                messages().sendCommand(ctx.getSource().getSender(), "music-disabled-for",
+                                        Placeholder.unparsed("player", target.getName()));
                             }
                             return Command.SINGLE_SUCCESS;
                         })
@@ -163,14 +158,15 @@ public class RegionMusicCommand {
                                     List<Player> players = resolver.resolve(ctx.getSource());
 
                                     if (players.isEmpty()) {
-                                        plugin.getMessageManager().sendPlayerNotFound(ctx.getSource().getSender());
+                                        messages().sendCommand(ctx.getSource().getSender(), "player-not-found");
                                         return Command.SINGLE_SUCCESS;
                                     }
 
                                     Player target = players.getFirst();
                                     plugin.getPlayerDataManager().enable(target.getUniqueId());
                                     plugin.getRegionListener().clearPlayerRegion(target.getUniqueId());
-                                    plugin.getMessageManager().sendMusicEnabledFor(ctx.getSource().getSender(), target.getName());
+                                    messages().sendCommand(ctx.getSource().getSender(), "music-enabled-for",
+                                            Placeholder.unparsed("player", target.getName()));
                                     return Command.SINGLE_SUCCESS;
                                 })
                         )
@@ -180,14 +176,15 @@ public class RegionMusicCommand {
                                     List<Player> players = resolver.resolve(ctx.getSource());
 
                                     if (players.isEmpty()) {
-                                        plugin.getMessageManager().sendPlayerNotFound(ctx.getSource().getSender());
+                                        messages().sendCommand(ctx.getSource().getSender(), "player-not-found");
                                         return Command.SINGLE_SUCCESS;
                                     }
 
                                     Player target = players.getFirst();
                                     plugin.getPlayerDataManager().disable(target.getUniqueId());
                                     plugin.getMusicManager().stopMusic(target);
-                                    plugin.getMessageManager().sendMusicDisabledFor(ctx.getSource().getSender(), target.getName());
+                                    messages().sendCommand(ctx.getSource().getSender(), "music-disabled-for",
+                                            Placeholder.unparsed("player", target.getName()));
                                     return Command.SINGLE_SUCCESS;
                                 })
                         )
@@ -200,17 +197,14 @@ public class RegionMusicCommand {
     private LiteralCommandNode<CommandSourceStack> buildStatusCommand() {
         return Commands.literal("status")
                 .executes(ctx -> {
-                    // Self-status — player only
                     CommandSender sender = ctx.getSource().getSender();
                     if (!(sender instanceof Player player)) {
-                        plugin.getMessageManager().sendRaw(sender,
-                                "<#D89B6A>Usage: <#FCD472>/regionmusic status \\<player>");
+                        messages().sendCommand(sender, "console-status-usage");
                         return Command.SINGLE_SUCCESS;
                     }
                     sendStatusFor(player, player);
                     return Command.SINGLE_SUCCESS;
                 })
-                // Admin: status for another player (console-accessible)
                 .then(Commands.argument("player", ArgumentTypes.player())
                         .requires(source -> source.getSender().hasPermission("regionmusic.admin"))
                         .executes(ctx -> {
@@ -218,7 +212,7 @@ public class RegionMusicCommand {
                             List<Player> players = resolver.resolve(ctx.getSource());
 
                             if (players.isEmpty()) {
-                                plugin.getMessageManager().sendPlayerNotFound(ctx.getSource().getSender());
+                                messages().sendCommand(ctx.getSource().getSender(), "player-not-found");
                                 return Command.SINGLE_SUCCESS;
                             }
 
@@ -228,16 +222,16 @@ public class RegionMusicCommand {
 
                             if (currentConfig != null) {
                                 RegionTrack track = mm.getCurrentTrack(target);
-                                plugin.getMessageManager().sendStatusPlayingFor(
-                                        ctx.getSource().getSender(),
-                                        target.getName(),
-                                        currentConfig.regionId(),
-                                        currentConfig.worldName(),
-                                        track != null ? track.displayName() : "unknown",
-                                        mm.getCurrentEffectiveVolume(target)
-                                );
+                                messages().sendCommand(ctx.getSource().getSender(), "status-playing-for",
+                                        Placeholder.unparsed("player", target.getName()),
+                                        Placeholder.unparsed("region", currentConfig.regionId()),
+                                        Placeholder.unparsed("world", currentConfig.worldName()),
+                                        Placeholder.unparsed("sound", track != null ? track.displayName() : "unknown"),
+                                        Placeholder.unparsed("volume",
+                                                String.format("%.0f%%", mm.getCurrentEffectiveVolume(target) * 100)));
                             } else {
-                                plugin.getMessageManager().sendStatusNotPlayingFor(ctx.getSource().getSender(), target.getName());
+                                messages().sendCommand(ctx.getSource().getSender(), "status-not-playing-for",
+                                        Placeholder.unparsed("player", target.getName()));
                             }
                             return Command.SINGLE_SUCCESS;
                         })
@@ -251,15 +245,14 @@ public class RegionMusicCommand {
 
         if (currentConfig != null) {
             RegionTrack track = mm.getCurrentTrack(target);
-            plugin.getMessageManager().sendStatusPlaying(
-                    sender,
-                    currentConfig.regionId(),
-                    currentConfig.worldName(),
-                    track != null ? track.displayName() : "unknown",
-                    mm.getCurrentEffectiveVolume(target)
-            );
+            messages().sendCommand(sender, "status-playing",
+                    Placeholder.unparsed("region", currentConfig.regionId()),
+                    Placeholder.unparsed("world", currentConfig.worldName()),
+                    Placeholder.unparsed("sound", track != null ? track.displayName() : "unknown"),
+                    Placeholder.unparsed("volume",
+                            String.format("%.0f%%", mm.getCurrentEffectiveVolume(target) * 100)));
         } else {
-            plugin.getMessageManager().sendStatusNotPlaying(sender);
+            messages().sendCommand(sender, "status-not-playing");
         }
     }
 
@@ -269,18 +262,16 @@ public class RegionMusicCommand {
         return Commands.literal("volume")
                 .requires(source -> source.getSender().hasPermission("regionmusic.volume"))
                 .executes(ctx -> {
-                    // Self-volume — player only
                     CommandSender sender = ctx.getSource().getSender();
                     if (!(sender instanceof Player player)) {
-                        plugin.getMessageManager().sendRaw(sender,
-                                "<#D89B6A>Usage: <#FCD472>/regionmusic volume \\<player> \\<0-100>");
+                        messages().sendCommand(sender, "console-volume-usage");
                         return Command.SINGLE_SUCCESS;
                     }
                     int vol = plugin.getPlayerDataManager().getVolumePercent(player.getUniqueId());
-                    plugin.getMessageManager().sendVolumeCurrent(player, vol);
+                    messages().sendCommand(player, "volume-current",
+                            Placeholder.unparsed("volume", String.valueOf(vol)));
                     return Command.SINGLE_SUCCESS;
                 })
-                // Self set value — player only
                 .then(Commands.argument("value", IntegerArgumentType.integer(0, 100))
                         .requires(source -> source.getSender() instanceof Player)
                         .executes(ctx -> {
@@ -288,15 +279,14 @@ public class RegionMusicCommand {
                             int value = IntegerArgumentType.getInteger(ctx, "value");
 
                             plugin.getPlayerDataManager().setVolumePercent(player.getUniqueId(), value);
-                            plugin.getMessageManager().sendVolumeSet(player, value);
+                            messages().sendCommand(player, "volume-set",
+                                    Placeholder.unparsed("volume", String.valueOf(value)));
 
-                            // Restart music with new volume
                             plugin.getMusicManager().stopMusicSilently(player);
                             plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
                             return Command.SINGLE_SUCCESS;
                         })
                 )
-                // Admin: set volume for another player (console-accessible)
                 .then(Commands.argument("player", ArgumentTypes.player())
                         .requires(source -> source.getSender().hasPermission("regionmusic.admin"))
                         .then(Commands.argument("value", IntegerArgumentType.integer(0, 100))
@@ -305,7 +295,7 @@ public class RegionMusicCommand {
                                     List<Player> players = resolver.resolve(ctx.getSource());
 
                                     if (players.isEmpty()) {
-                                        plugin.getMessageManager().sendPlayerNotFound(ctx.getSource().getSender());
+                                        messages().sendCommand(ctx.getSource().getSender(), "player-not-found");
                                         return Command.SINGLE_SUCCESS;
                                     }
 
@@ -313,7 +303,9 @@ public class RegionMusicCommand {
                                     int value = IntegerArgumentType.getInteger(ctx, "value");
 
                                     plugin.getPlayerDataManager().setVolumePercent(target.getUniqueId(), value);
-                                    plugin.getMessageManager().sendVolumeSetFor(ctx.getSource().getSender(), target.getName(), value);
+                                    messages().sendCommand(ctx.getSource().getSender(), "volume-set-for",
+                                            Placeholder.unparsed("player", target.getName()),
+                                            Placeholder.unparsed("volume", String.valueOf(value)));
 
                                     plugin.getMusicManager().stopMusicSilently(target);
                                     plugin.getRegionListener().clearPlayerRegion(target.getUniqueId());
@@ -334,11 +326,10 @@ public class RegionMusicCommand {
                         .executes(ctx -> {
                             Player player = (Player) ctx.getSource().getSender();
                             if (plugin.getMusicManager().stopPreview(player)) {
-                                plugin.getMessageManager().sendPreviewStopped(player);
-                                // Clear region tracking so next check resumes region music
+                                messages().sendCommand(player, "preview-stopped");
                                 plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
                             } else {
-                                plugin.getMessageManager().sendPreviewNotPlaying(player);
+                                messages().sendCommand(player, "preview-not-playing");
                             }
                             return Command.SINGLE_SUCCESS;
                         })
@@ -366,13 +357,14 @@ public class RegionMusicCommand {
         try {
             soundKey = Key.key(soundStr);
         } catch (Exception e) {
-            plugin.getMessageManager().sendError(player, "<#C27B6B>Invalid sound key: <#FCD472><sound><#C27B6B>.",
+            messages().sendCommand(player, "invalid-sound",
                     Placeholder.unparsed("sound", soundStr));
             return Command.SINGLE_SUCCESS;
         }
 
         plugin.getMusicManager().startPreview(player, soundKey, volume);
-        plugin.getMessageManager().sendPreviewStarted(player, soundStr);
+        messages().sendCommand(player, "preview-started",
+                Placeholder.unparsed("sound", soundStr));
         return Command.SINGLE_SUCCESS;
     }
 
@@ -386,11 +378,10 @@ public class RegionMusicCommand {
                     var regionData = plugin.getConfigManager().getRegionData();
 
                     if (regionData.isEmpty()) {
-                        plugin.getMessageManager().sendListEmpty(sender);
+                        messages().sendCommand(sender, "list-empty");
                         return Command.SINGLE_SUCCESS;
                     }
 
-                    // Determine current region if sender is a player
                     String currentRegionId = null;
                     String currentWorldName = null;
                     if (sender instanceof Player player) {
@@ -401,11 +392,12 @@ public class RegionMusicCommand {
                         }
                     }
 
-                    plugin.getMessageManager().sendListHeader(sender);
+                    messages().sendCommand(sender, "list-header");
 
                     for (Map.Entry<String, Map<String, RegionConfig>> worldEntry : regionData.entrySet()) {
                         String worldName = worldEntry.getKey();
-                        plugin.getMessageManager().sendListWorldHeader(sender, worldName);
+                        messages().sendCommand(sender, "list-world-header",
+                                Placeholder.unparsed("world", worldName));
 
                         for (Map.Entry<String, RegionConfig> regionEntry : worldEntry.getValue().entrySet()) {
                             String regionId = regionEntry.getKey();
@@ -413,9 +405,13 @@ public class RegionMusicCommand {
                             String sound = config.tracks().isEmpty() ? "none" : config.tracks().getFirst().displayName();
 
                             if (regionId.equals(currentRegionId) && worldName.equals(currentWorldName)) {
-                                plugin.getMessageManager().sendListEntryCurrent(sender, regionId, sound);
+                                messages().sendCommand(sender, "list-entry-current",
+                                        Placeholder.unparsed("region", regionId),
+                                        Placeholder.unparsed("sound", sound));
                             } else {
-                                plugin.getMessageManager().sendListEntry(sender, regionId, sound);
+                                messages().sendCommand(sender, "list-entry",
+                                        Placeholder.unparsed("region", regionId),
+                                        Placeholder.unparsed("sound", sound));
                             }
                         }
                     }
@@ -427,11 +423,26 @@ public class RegionMusicCommand {
 
     // --- Help ---
 
-    private void sendHelp(CommandSourceStack source) {
-        plugin.getMessageManager().sendHelp(source.getSender());
+    private void sendHelp(CommandSender sender) {
+        messages().sendCommand(sender, "help-header");
+        messages().sendCommand(sender, "help-reload");
+        messages().sendCommand(sender, "help-toggle");
+        messages().sendCommand(sender, "help-toggle-player");
+        messages().sendCommand(sender, "help-status");
+        messages().sendCommand(sender, "help-status-player");
+        messages().sendCommand(sender, "help-volume");
+        messages().sendCommand(sender, "help-volume-set");
+        messages().sendCommand(sender, "help-volume-player");
+        messages().sendCommand(sender, "help-preview");
+        messages().sendCommand(sender, "help-preview-stop");
+        messages().sendCommand(sender, "help-list");
+        messages().sendCommand(sender, "help-help");
     }
 
-    private void sendPlayerHelp(CommandSourceStack source) {
-        plugin.getMessageManager().sendPlayerHelp(source.getSender());
+    private void sendPlayerHelp(CommandSender sender) {
+        messages().sendCommand(sender, "player-help-header");
+        messages().sendCommand(sender, "player-help-toggle");
+        messages().sendCommand(sender, "player-help-status");
+        messages().sendCommand(sender, "player-help-volume");
     }
 }

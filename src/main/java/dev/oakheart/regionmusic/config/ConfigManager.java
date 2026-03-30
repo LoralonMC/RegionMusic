@@ -7,26 +7,22 @@ import dev.oakheart.regionmusic.RegionMusic;
 import dev.oakheart.regionmusic.RegionTrack;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.sound.Sound;
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class ConfigManager {
 
     private final RegionMusic plugin;
     private final Logger logger;
-    private final File configFile;
-    private FileConfiguration config;
+    private final Path configFile;
+    private dev.oakheart.config.ConfigManager config;
 
     // General settings
     private boolean debug;
@@ -36,11 +32,8 @@ public class ConfigManager {
     private boolean eventPlayerRespawn;
     private boolean eventPlayerChangeWorld;
 
-    // New 2.0 settings
     private int transitionDelay;
     private boolean stopVanillaMusic;
-    private String nowPlayingDisplay;
-    private String musicStoppedDisplay;
 
     // Cached region data: world -> region -> RegionConfig
     private Map<String, Map<String, RegionConfig>> regionData = Map.of();
@@ -48,22 +41,33 @@ public class ConfigManager {
     public ConfigManager(RegionMusic plugin) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
-        this.configFile = new File(plugin.getDataFolder(), "config.yml");
+        this.configFile = plugin.getDataFolder().toPath().resolve("config.yml");
     }
 
     public void load() {
-        if (!configFile.exists()) {
+        if (!configFile.toFile().exists()) {
             plugin.saveResource("config.yml", false);
         }
 
-        config = YamlConfiguration.loadConfiguration(configFile);
+        try {
+            config = dev.oakheart.config.ConfigManager.load(configFile);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load config.yml", e);
+        }
+
         mergeDefaults();
         validate(config);
         cacheValues();
     }
 
     public boolean reload() {
-        FileConfiguration newConfig = YamlConfiguration.loadConfiguration(configFile);
+        dev.oakheart.config.ConfigManager newConfig;
+        try {
+            newConfig = dev.oakheart.config.ConfigManager.load(configFile);
+        } catch (IOException e) {
+            logger.log(Level.WARNING, "Failed to reload config.yml", e);
+            return false;
+        }
 
         if (!validate(newConfig)) {
             logger.warning("Configuration reload failed validation. Keeping previous configuration.");
@@ -77,38 +81,18 @@ public class ConfigManager {
     }
 
     private void mergeDefaults() {
-        var resource = plugin.getResource("config.yml");
-        if (resource == null) return;
-
-        FileConfiguration defaults;
-        try (var reader = new InputStreamReader(resource, StandardCharsets.UTF_8)) {
-            defaults = YamlConfiguration.loadConfiguration(reader);
-        } catch (IOException e) {
-            logger.warning("Failed to read default config from JAR: " + e.getMessage());
-            return;
-        }
-
-        config.setDefaults(defaults);
-
-        if (hasNewKeys(defaults)) {
-            config.options().copyDefaults(true);
-            try {
-                config.save(configFile);
-            } catch (IOException e) {
-                logger.warning("Failed to save config with new defaults: " + e.getMessage());
+        try (var stream = plugin.getResource("config.yml")) {
+            if (stream == null) return;
+            var defaults = dev.oakheart.config.ConfigManager.fromStream(stream);
+            if (config.mergeDefaults(defaults)) {
+                config.save();
             }
+        } catch (IOException e) {
+            logger.warning("Failed to merge config defaults: " + e.getMessage());
         }
     }
 
-    private boolean hasNewKeys(FileConfiguration defaults) {
-        for (String key : defaults.getKeys(true)) {
-            if (defaults.isConfigurationSection(key)) continue;
-            if (!config.contains(key, true)) return true;
-        }
-        return false;
-    }
-
-    private boolean validate(FileConfiguration configToValidate) {
+    private boolean validate(dev.oakheart.config.ConfigManager configToValidate) {
         List<String> warnings = new ArrayList<>();
 
         int interval = configToValidate.getInt("check-interval", 10);
@@ -121,25 +105,15 @@ public class ConfigManager {
             warnings.add("transition-delay must be >= 0, defaulting to 0");
         }
 
-        String npDisplay = configToValidate.getString("now-playing-display", "chat");
-        if (!isValidDisplayMode(npDisplay)) {
-            warnings.add("Invalid now-playing-display '" + npDisplay + "', defaulting to chat");
-        }
-
-        String msDisplay = configToValidate.getString("music-stopped-display", "none");
-        if (!isValidDisplayMode(msDisplay)) {
-            warnings.add("Invalid music-stopped-display '" + msDisplay + "', defaulting to none");
-        }
-
         // Validate regions
-        ConfigurationSection regionsSection = configToValidate.getConfigurationSection("regions");
+        dev.oakheart.config.ConfigManager regionsSection = configToValidate.getSection("regions");
         if (regionsSection != null) {
             for (String worldName : regionsSection.getKeys(false)) {
-                ConfigurationSection worldSection = regionsSection.getConfigurationSection(worldName);
+                dev.oakheart.config.ConfigManager worldSection = regionsSection.getSection(worldName);
                 if (worldSection == null) continue;
 
                 for (String regionId : worldSection.getKeys(false)) {
-                    ConfigurationSection regionSection = worldSection.getConfigurationSection(regionId);
+                    dev.oakheart.config.ConfigManager regionSection = worldSection.getSection(regionId);
                     if (regionSection == null) continue;
 
                     validateRegionSection(regionId, worldName, regionSection, warnings);
@@ -153,15 +127,13 @@ public class ConfigManager {
             logger.warning("==============================");
         }
 
-        // All config values have fallback defaults, so no conditions are currently fatal.
-        // The boolean return type is preserved for future use (e.g. breaking schema changes).
         return true;
     }
 
-    private void validateRegionSection(String regionId, String worldName, ConfigurationSection section, List<String> warnings) {
+    private void validateRegionSection(String regionId, String worldName,
+                                       dev.oakheart.config.ConfigManager section, List<String> warnings) {
         String prefix = "Region " + regionId + " in " + worldName;
 
-        // Check for sound(s) - either single sound or sounds list
         boolean hasSingleSound = section.contains("sound");
         boolean hasSoundsList = section.contains("sounds");
 
@@ -223,7 +195,7 @@ public class ConfigManager {
         }
 
         // Validate variants
-        ConfigurationSection variantsSection = section.getConfigurationSection("variants");
+        dev.oakheart.config.ConfigManager variantsSection = section.getSection("variants");
         if (variantsSection != null) {
             for (String variantName : variantsSection.getKeys(false)) {
                 try {
@@ -233,7 +205,7 @@ public class ConfigManager {
                     continue;
                 }
 
-                ConfigurationSection variantSection = variantsSection.getConfigurationSection(variantName);
+                dev.oakheart.config.ConfigManager variantSection = variantsSection.getSection(variantName);
                 if (variantSection != null) {
                     boolean variantHasSound = variantSection.contains("sound");
                     boolean variantHasSounds = variantSection.contains("sounds");
@@ -241,7 +213,8 @@ public class ConfigManager {
                         warnings.add(prefix + " variant " + variantName + ": No sound or sounds specified");
                     }
                     if (variantHasSound) {
-                        validateSoundKey(variantSection.getString("sound"), prefix + " variant " + variantName, warnings);
+                        validateSoundKey(variantSection.getString("sound"),
+                                prefix + " variant " + variantName, warnings);
                     }
                 }
             }
@@ -260,10 +233,6 @@ public class ConfigManager {
         }
     }
 
-    private boolean isValidDisplayMode(String mode) {
-        return mode != null && (mode.equals("chat") || mode.equals("actionbar") || mode.equals("title") || mode.equals("none"));
-    }
-
     private void cacheValues() {
         debug = config.getBoolean("debug", false);
 
@@ -277,26 +246,22 @@ public class ConfigManager {
 
         transitionDelay = Math.max(0, config.getInt("transition-delay", 0));
         stopVanillaMusic = config.getBoolean("stop-vanilla-music", false);
-        nowPlayingDisplay = config.getString("now-playing-display", "chat");
-        if (!isValidDisplayMode(nowPlayingDisplay)) nowPlayingDisplay = "chat";
-        musicStoppedDisplay = config.getString("music-stopped-display", "none");
-        if (!isValidDisplayMode(musicStoppedDisplay)) musicStoppedDisplay = "none";
 
         regionData = loadRegionData();
     }
 
     private Map<String, Map<String, RegionConfig>> loadRegionData() {
         Map<String, Map<String, RegionConfig>> result = new HashMap<>();
-        ConfigurationSection regionsSection = config.getConfigurationSection("regions");
+        dev.oakheart.config.ConfigManager regionsSection = config.getSection("regions");
         if (regionsSection == null) return result;
 
         for (String worldName : regionsSection.getKeys(false)) {
-            ConfigurationSection worldSection = regionsSection.getConfigurationSection(worldName);
+            dev.oakheart.config.ConfigManager worldSection = regionsSection.getSection(worldName);
             if (worldSection == null) continue;
 
             Map<String, RegionConfig> worldRegions = new HashMap<>();
             for (String regionId : worldSection.getKeys(false)) {
-                RegionConfig data = parseRegionConfig(worldName, regionId, worldSection.getConfigurationSection(regionId));
+                RegionConfig data = parseRegionConfig(worldName, regionId, worldSection.getSection(regionId));
                 if (data != null) {
                     worldRegions.put(regionId, data);
                 }
@@ -310,10 +275,10 @@ public class ConfigManager {
         return result;
     }
 
-    private RegionConfig parseRegionConfig(String worldName, String regionId, ConfigurationSection section) {
+    private RegionConfig parseRegionConfig(String worldName, String regionId,
+                                           dev.oakheart.config.ConfigManager section) {
         if (section == null) return null;
 
-        // Parse tracks (single sound or sounds list)
         List<RegionTrack> tracks = parseTracks(section);
         if (tracks.isEmpty()) return null;
 
@@ -339,17 +304,15 @@ public class ConfigManager {
                 ? PlaybackOrder.SHUFFLE
                 : PlaybackOrder.SEQUENTIAL;
 
-        // Parse variants
         Map<VariantType, List<RegionTrack>> variants = parseVariants(section, loop);
 
         return new RegionConfig(regionId, worldName, volume, loop, soundSource,
                 configPriority, order, tracks, variants);
     }
 
-    private List<RegionTrack> parseTracks(ConfigurationSection section) {
+    private List<RegionTrack> parseTracks(dev.oakheart.config.ConfigManager section) {
         List<RegionTrack> tracks = new ArrayList<>();
 
-        // Check for sounds list first (playlist format)
         if (section.contains("sounds")) {
             var soundsList = section.getMapList("sounds");
             for (var entry : soundsList) {
@@ -360,7 +323,6 @@ public class ConfigManager {
             }
         }
 
-        // Fall back to single sound
         if (tracks.isEmpty()) {
             String soundStr = section.getString("sound");
             if (soundStr == null || soundStr.isEmpty()) return tracks;
@@ -376,7 +338,6 @@ public class ConfigManager {
             long durationTicks = (long) (durationSeconds * 20);
             boolean loop = section.getBoolean("loop", false);
 
-            // Non-looping single track: duration 0 is fine (plays once)
             if (loop && durationTicks <= 0) return tracks;
 
             String name = section.getString("name");
@@ -386,7 +347,7 @@ public class ConfigManager {
         return tracks;
     }
 
-    private RegionTrack parseTrackFromMap(Map<?, ?> entry) {
+    private RegionTrack parseTrackFromMap(Map<String, Object> entry) {
         Object soundObj = entry.get("sound");
         if (soundObj == null) return null;
 
@@ -419,10 +380,11 @@ public class ConfigManager {
         return new RegionTrack(soundKey, durationTicks, name);
     }
 
-    private Map<VariantType, List<RegionTrack>> parseVariants(ConfigurationSection section, boolean parentLoop) {
+    private Map<VariantType, List<RegionTrack>> parseVariants(dev.oakheart.config.ConfigManager section,
+                                                              boolean parentLoop) {
         Map<VariantType, List<RegionTrack>> variants = new HashMap<>();
 
-        ConfigurationSection variantsSection = section.getConfigurationSection("variants");
+        dev.oakheart.config.ConfigManager variantsSection = section.getSection("variants");
         if (variantsSection == null) return variants;
 
         for (String variantName : variantsSection.getKeys(false)) {
@@ -433,7 +395,7 @@ public class ConfigManager {
                 continue;
             }
 
-            ConfigurationSection variantSection = variantsSection.getConfigurationSection(variantName);
+            dev.oakheart.config.ConfigManager variantSection = variantsSection.getSection(variantName);
             if (variantSection == null) continue;
 
             List<RegionTrack> variantTracks = parseVariantTracks(variantSection, parentLoop);
@@ -445,10 +407,9 @@ public class ConfigManager {
         return variants;
     }
 
-    private List<RegionTrack> parseVariantTracks(ConfigurationSection section, boolean parentLoop) {
+    private List<RegionTrack> parseVariantTracks(dev.oakheart.config.ConfigManager section, boolean parentLoop) {
         List<RegionTrack> tracks = new ArrayList<>();
 
-        // Check for sounds list first
         if (section.contains("sounds")) {
             var soundsList = section.getMapList("sounds");
             for (var entry : soundsList) {
@@ -459,7 +420,6 @@ public class ConfigManager {
             }
         }
 
-        // Fall back to single sound
         if (tracks.isEmpty()) {
             String soundStr = section.getString("sound");
             if (soundStr == null || soundStr.isEmpty()) return tracks;
@@ -493,7 +453,7 @@ public class ConfigManager {
 
     // --- Getters ---
 
-    public FileConfiguration getConfig() {
+    public dev.oakheart.config.ConfigManager getConfig() {
         return config;
     }
 
@@ -531,13 +491,5 @@ public class ConfigManager {
 
     public boolean isStopVanillaMusic() {
         return stopVanillaMusic;
-    }
-
-    public String getNowPlayingDisplay() {
-        return nowPlayingDisplay;
-    }
-
-    public String getMusicStoppedDisplay() {
-        return musicStoppedDisplay;
     }
 }

@@ -1,6 +1,5 @@
 # RegionMusic Configuration
 # ========================
-# All messages support MiniMessage format: https://docs.advntr.dev/minimessage/format.html
 #
 # ============================================================
 # PLACEHOLDERAPI PLACEHOLDERS
@@ -46,119 +45,6 @@ transition-delay: 0
 # Stop vanilla Minecraft background music before playing region music.
 # Uses stopSound(Source.MUSIC) to silence ambient music.
 stop-vanilla-music: false
-
-# How to display "now playing" and "music stopped" messages.
-# Options: chat, actionbar, title, none
-now-playing-display: chat
-music-stopped-display: none
-
-# ============================================================
-# MESSAGES
-# ============================================================
-# All messages use MiniMessage format
-# Available placeholders use <placeholder> syntax (listed in comments)
-# Set a message to "" to disable it
-
-messages:
-  # Prefix added to standard plugin messages
-  prefix: "<#6C757D>[<#6B7A5E>ᴍᴜꜱɪᴄ<#6C757D>] "
-
-  # Prefix used for error messages (replaces the standard prefix)
-  error-prefix: "<#6C757D>[<#C27B6B>ᴇʀʀᴏʀ<#6C757D>] "
-
-  # Shown when config is reloaded
-  # Placeholders: <count> = number of regions loaded
-  config-reloaded: "<#f2ebd7>Configuration <#8FAA87>reloaded<#f2ebd7>! <#FCD472><count><#f2ebd7> region(s) loaded."
-
-  # Shown when config reload fails validation
-  reload-failed: "<#C27B6B>Configuration reload failed! Check console for details."
-
-  # Shown when player doesn't have permission
-  no-permission: "<#C27B6B>You don't have permission to use this command."
-
-  # Shown for unknown subcommand
-  # Placeholders: <command> = the unknown command entered
-  unknown-command: "<#C27B6B>Unknown subcommand: <#FCD472><command><#C27B6B>. Use <#FCD472>/regionmusic help<#C27B6B> for usage."
-
-  # Shown when target player is not found
-  player-not-found: "<#C27B6B>Player not found."
-
-  # Now playing message (shown when entering a region with music)
-  # Placeholders: <region>, <world>, <sound>
-  # Set to "" to disable
-  now-playing: "<#f2ebd7>Now playing: <#FCD472><sound> <#6C757D>(<region>)"
-
-  # Music stopped message (shown when leaving a music region)
-  # Placeholders: <region>, <world>
-  # Set to "" to disable
-  music-stopped: "<#f2ebd7>Music stopped."
-
-  # Toggle messages (for yourself)
-  music-enabled: "<#f2ebd7>Region music <#8FAA87>enabled<#f2ebd7>."
-  music-disabled: "<#f2ebd7>Region music <#C27B6B>disabled<#f2ebd7>."
-
-  # Toggle messages (admin toggling for another player)
-  # Placeholders: <player>
-  music-enabled-for: "<#f2ebd7>Region music <#8FAA87>enabled<#f2ebd7> for <#FCD472><player><#f2ebd7>."
-  music-disabled-for: "<#f2ebd7>Region music <#C27B6B>disabled<#f2ebd7> for <#FCD472><player><#f2ebd7>."
-
-  # Volume messages
-  # Placeholders: <volume> = volume percentage (0-100)
-  volume-set: "<#f2ebd7>Music volume set to <#FCD472><volume>%<#f2ebd7>."
-  volume-current: "<#f2ebd7>Your music volume is <#FCD472><volume>%<#f2ebd7>."
-  # Placeholders: <player>, <volume>
-  volume-set-for: "<#f2ebd7>Music volume set to <#FCD472><volume>%<#f2ebd7> for <#FCD472><player><#f2ebd7>."
-
-  # Preview messages
-  # Placeholders: <sound>
-  preview-started: "<#f2ebd7>Previewing: <#FCD472><sound><#f2ebd7>."
-  preview-stopped: "<#f2ebd7>Preview stopped."
-  preview-not-playing: "<#f2ebd7>No preview is playing."
-
-  # List command messages
-  list-header: "<#6C757D>═══════ <#6B7A5E>Configured Regions <#6C757D>═══════"
-  # Placeholders: <world>
-  list-world-header: "<#FCD472><world><#6C757D>:"
-  # Placeholders: <region>, <sound>
-  list-entry: "  <#6C757D>- <#f2ebd7><region><#6C757D>: <#FCD472><sound>"
-  list-entry-current: "  <#8FAA87>► <#f2ebd7><region><#6C757D>: <#FCD472><sound> <#6C757D>(current)"
-  list-empty: "<#f2ebd7>No regions configured."
-
-  # Discovery message (shown the first time a player enters a music region)
-  # Placeholders: <region>, <world>
-  # Set to "" to disable
-  region-discovered: "<#f2ebd7>New area discovered: <#FCD472><region><#f2ebd7>!"
-
-  # Admin help command
-  help-header: "<#6C757D>═══════ <#6B7A5E>RegionMusic Help <#6C757D>═══════"
-  help-reload: "<#FCD472>/regionmusic reload <#6C757D>- <#f2ebd7>Reload the configuration"
-  help-toggle: "<#FCD472>/regionmusic toggle [on|off] <#6C757D>- <#f2ebd7>Toggle music on/off"
-  help-toggle-player: "<#FCD472>/regionmusic toggle <player> [on|off] <#6C757D>- <#f2ebd7>Toggle music for a player"
-  help-status: "<#FCD472>/regionmusic status <#6C757D>- <#f2ebd7>Show current music status"
-  help-status-player: "<#FCD472>/regionmusic status <player> <#6C757D>- <#f2ebd7>Show a player's music status"
-  help-volume: "<#FCD472>/regionmusic volume <#6C757D>- <#f2ebd7>Show your music volume"
-  help-volume-set: "<#FCD472>/regionmusic volume <0-100> <#6C757D>- <#f2ebd7>Set your music volume"
-  help-volume-player: "<#FCD472>/regionmusic volume <player> <0-100> <#6C757D>- <#f2ebd7>Set a player's volume"
-  help-preview: "<#FCD472>/regionmusic preview <sound> [volume] <#6C757D>- <#f2ebd7>Preview a sound"
-  help-preview-stop: "<#FCD472>/regionmusic preview stop <#6C757D>- <#f2ebd7>Stop previewing"
-  help-list: "<#FCD472>/regionmusic list <#6C757D>- <#f2ebd7>List configured regions"
-  help-help: "<#FCD472>/regionmusic help <#6C757D>- <#f2ebd7>Show this help message"
-
-  # Player help command (non-admin)
-  player-help-header: "<#6C757D>═══════ <#6B7A5E>RegionMusic <#6C757D>═══════"
-  player-help-toggle: "<#FCD472>/regionmusic toggle [on|off] <#6C757D>- <#f2ebd7>Toggle music on/off"
-  player-help-status: "<#FCD472>/regionmusic status <#6C757D>- <#f2ebd7>Show current music"
-  player-help-volume: "<#FCD472>/regionmusic volume [0-100] <#6C757D>- <#f2ebd7>Show or set your volume"
-
-  # Status command messages
-  # Placeholders: <region>, <world>, <sound>, <volume>
-  status-playing: "<#f2ebd7>Currently playing: <#FCD472><sound> <#6C757D>in region <#FCD472><region> <#6C757D>(<world>)"
-  status-not-playing: "<#f2ebd7>No music currently playing."
-
-  # Status command messages for checking other players (admin)
-  # Placeholders: <player>, <region>, <world>, <sound>, <volume>
-  status-playing-for: "<#FCD472><player> <#f2ebd7>is listening to: <#FCD472><sound> <#6C757D>in region <#FCD472><region> <#6C757D>(<world>)"
-  status-not-playing-for: "<#FCD472><player> <#f2ebd7>has no music playing."
 
 # ============================================================
 # REGIONS

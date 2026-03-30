@@ -12,6 +12,7 @@ import dev.oakheart.regionmusic.RegionConfig.VariantType;
 import dev.oakheart.regionmusic.RegionMusic;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -271,7 +272,9 @@ public class RegionMusicListener implements Listener {
         boolean newDiscovery = plugin.getPlayerDataManager().discoverRegion(
                 player, regionConfig.worldName(), regionConfig.regionId());
         if (newDiscovery) {
-            plugin.getMessageManager().sendRegionDiscovered(player, regionConfig.regionId(), regionConfig.worldName());
+            plugin.getMessageManager().send(player, "region-discovered",
+                    Placeholder.unparsed("region", regionConfig.regionId()),
+                    Placeholder.unparsed("world", regionConfig.worldName()));
         }
 
         plugin.debug(player.getName() + " entered music region: " + regionConfig.regionId()

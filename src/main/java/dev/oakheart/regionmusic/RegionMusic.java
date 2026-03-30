@@ -3,7 +3,8 @@ package dev.oakheart.regionmusic;
 import dev.oakheart.regionmusic.commands.RegionMusicCommand;
 import dev.oakheart.regionmusic.config.ConfigManager;
 import dev.oakheart.regionmusic.listeners.RegionMusicListener;
-import dev.oakheart.regionmusic.message.MessageManager;
+import dev.oakheart.message.MessageManager;
+import dev.oakheart.util.DebugLogger;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -18,6 +19,7 @@ public final class RegionMusic extends JavaPlugin {
     private RegionMusicListener regionListener;
     private PlayerDataManager playerDataManager;
     private MessageManager messageManager;
+    private DebugLogger debugLogger;
 
     @Override
     public void onEnable() {
@@ -62,7 +64,11 @@ public final class RegionMusic extends JavaPlugin {
         configManager = new ConfigManager(this);
         configManager.load();
 
-        messageManager = new MessageManager(this);
+        debugLogger = new DebugLogger(getLogger(), configManager::isDebug);
+
+        messageManager = new MessageManager(this, getLogger());
+        messageManager.load();
+
         playerDataManager = new PlayerDataManager(this);
         musicManager = new MusicManager(this);
     }
@@ -120,10 +126,12 @@ public final class RegionMusic extends JavaPlugin {
         return messageManager;
     }
 
+    public DebugLogger getDebugLogger() {
+        return debugLogger;
+    }
+
     public void debug(String message) {
-        if (configManager.isDebug()) {
-            getLogger().info(message);
-        }
+        debugLogger.log(message);
     }
 
     public RegionMusicListener getRegionListener() {
