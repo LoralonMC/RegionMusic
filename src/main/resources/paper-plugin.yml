@@ -2,7 +2,7 @@ name: RegionMusic
 version: '${version}'
 main: dev.oakheart.regionmusic.RegionMusic
 description: 'Play music when players enter WorldGuard regions.'
-api-version: '1.21.10'
+api-version: '26.1.2'
 authors:
   - Loralon
 website: https://github.com/LoralonMC/RegionMusic
