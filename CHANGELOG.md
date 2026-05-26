@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Music configured against the `__global__` region is now picked up. WorldGuard's `ApplicableRegionSet.iterator()` does not include the global region — it's used only for default-flag calculation — so the previous lookup loop never saw it. RegionMusic now queries the global region explicitly in addition to iterating applicable regions, letting admins configure music for an entire world via a single `__global__` entry.
+
 ### Changed
 
 - Migrate to OakheartLib for config management (ConfigManager), messaging (MessageManager), command registration (CommandRegistrar), and debug logging (DebugLogger)

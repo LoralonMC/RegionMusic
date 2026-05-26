@@ -188,7 +188,7 @@ public class RegionMusicListener implements Listener {
                 BukkitAdapter.asBlockVector(player.getLocation())
         );
 
-        RegionConfig regionConfig = findMusicForRegions(regions, worldName);
+        RegionConfig regionConfig = findMusicForRegions(regions, regionManager, worldName);
 
         if (regionConfig != null) {
             // Suppress vanilla music periodically while in a music region
@@ -378,7 +378,9 @@ public class RegionMusicListener implements Listener {
 
     // --- Region lookup helpers ---
 
-    private RegionConfig findMusicForRegions(ApplicableRegionSet regions, String worldName) {
+    private RegionConfig findMusicForRegions(ApplicableRegionSet regions,
+                                             RegionManager regionManager,
+                                             String worldName) {
         Map<String, RegionConfig> worldRegions = plugin.getConfigManager().getRegionData().get(worldName);
         if (worldRegions == null) return null;
 
@@ -399,6 +401,23 @@ public class RegionMusicListener implements Listener {
             }
         }
 
+        // WG's ApplicableRegionSet iterator does NOT include the global region —
+        // it's used only for default-flag calculation. Look it up explicitly so
+        // admins can configure music for an entire world via the __global__ key.
+        RegionConfig globalData = worldRegions.get("__global__");
+        if (globalData != null) {
+            ProtectedRegion globalRegion = regionManager.getRegion("__global__");
+            int wgPriority = globalRegion != null ? globalRegion.getPriority() : 0;
+            int priority = globalData.configPriority() == RegionConfig.USE_WORLDGUARD_PRIORITY
+                    ? wgPriority
+                    : globalData.configPriority();
+
+            if (priority > highestPriority) {
+                highestPriority = priority;
+                highestPriorityMusic = globalData;
+            }
+        }
+
         return highestPriorityMusic;
     }
 
@@ -412,7 +431,7 @@ public class RegionMusicListener implements Listener {
                 BukkitAdapter.asBlockVector(player.getLocation())
         );
 
-        return findMusicForRegions(regions, world.getName());
+        return findMusicForRegions(regions, regionManager, world.getName());
     }
 
     // --- Transition management ---
