@@ -6,6 +6,7 @@ import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -108,9 +109,24 @@ public class MusicManager {
         // Stop any previous sound from this state
         stopSoundsForState(player, state);
 
-        // Play the new sound
+        // Suppress any currently-playing vanilla biome music in the MUSIC
+        // source before we start ours. This is the only place where we stop
+        // the MUSIC source globally — doing it periodically would also kill
+        // our own track, since both vanilla music and region music share the
+        // same source category.
+        if (plugin.getConfigManager().isStopVanillaMusic()) {
+            player.stopSound(SoundStop.source(Sound.Source.MUSIC));
+        }
+
+        // Play the new sound at the player's position. Entity-attached playback
+        // (Sound.Emitter.self()) is unreliable for streamed OGG tracks under the
+        // MUSIC source — the client treats music as a positional/global sound,
+        // not an entity sound. Positional playback at the player's location
+        // matches what /playsound does and works for both short event sounds
+        // and long streamed tracks.
         Sound sound = state.regionConfig.createSound(track, state.effectiveVolume);
-        player.playSound(sound, Sound.Emitter.self());
+        Location loc = player.getLocation();
+        player.playSound(sound, loc.getX(), loc.getY(), loc.getZ());
         state.currentSoundKey = track.soundKey();
 
         // Schedule next track if looping or playlist with more tracks
@@ -202,9 +218,11 @@ public class MusicManager {
         // Stop any existing preview
         stopPreviewImmediately(player);
 
-        // Play preview sound
+        // Play preview sound at the player's position (see playTrack for why
+        // positional playback is required for streamed music tracks).
         Sound sound = Sound.sound(soundKey, Sound.Source.MUSIC, volume, 1.0f);
-        player.playSound(sound, Sound.Emitter.self());
+        Location loc = player.getLocation();
+        player.playSound(sound, loc.getX(), loc.getY(), loc.getZ());
 
         previewStates.put(playerId, new PreviewState(soundKey));
     }
