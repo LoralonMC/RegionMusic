@@ -11,6 +11,7 @@ import dev.oakheart.regionmusic.RegionConfig;
 import dev.oakheart.regionmusic.RegionConfig.VariantType;
 import dev.oakheart.regionmusic.RegionMusic;
 import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -36,6 +37,14 @@ public class RegionMusicListener implements Listener {
     private static final long JOIN_CHECK_DELAY_TICKS = 10L;
     private static final long EVENT_CHECK_DELAY_TICKS = 1L;
 
+    /**
+     * How many check cycles between periodic vanilla-music stops.
+     * With the default check-interval of 10 ticks (0.5s), this means a
+     * stopSound packet every ~2.5 seconds. Only relevant when the active
+     * region track uses a non-MUSIC source — see {@link #tickVanillaStop}.
+     */
+    private static final int VANILLA_STOP_INTERVAL = 5;
+
     private final RegionMusic plugin;
     private final MusicManager musicManager;
 
@@ -43,6 +52,8 @@ public class RegionMusicListener implements Listener {
     private final Map<UUID, String> playerCurrentRegion = new HashMap<>();
     // Tracks last checked block position to skip stationary players (packed x/y/z/world)
     private final Map<UUID, Long> playerLastPosition = new HashMap<>();
+    // Counts check cycles per player for throttling periodic vanilla-music stops
+    private final Map<UUID, Integer> vanillaStopCounter = new HashMap<>();
     // Tracks pending transition-delay tasks
     private final Map<UUID, BukkitTask> transitionTasks = new HashMap<>();
     // Tracks players that need a forced re-check (e.g. after event or clearPlayerRegion)
@@ -79,6 +90,7 @@ public class RegionMusicListener implements Listener {
         cancelAllTransitions();
         playerCurrentRegion.clear();
         playerLastPosition.clear();
+        vanillaStopCounter.clear();
         forceCheck.clear();
         startChecking();
     }
@@ -99,6 +111,7 @@ public class RegionMusicListener implements Listener {
         UUID playerId = player.getUniqueId();
         playerCurrentRegion.remove(playerId);
         playerLastPosition.remove(playerId);
+        vanillaStopCounter.remove(playerId);
         forceCheck.remove(playerId);
         cancelTransition(playerId);
         musicManager.cleanupPlayer(player);
@@ -153,6 +166,12 @@ public class RegionMusicListener implements Listener {
         // Variant checks (weather/time) still need to run, so only skip if player
         // has no variants configured for their current region.
         if (!forced && !hasMovedSinceLastCheck(player)) {
+            // Still suppress vanilla music periodically when our active track
+            // is on a non-MUSIC source (so the stop won't kill it).
+            if (plugin.getConfigManager().isStopVanillaMusic()
+                    && playerCurrentRegion.containsKey(playerId)) {
+                tickVanillaStop(player);
+            }
             // Still check for variant changes even when stationary
             if (playerCurrentRegion.containsKey(playerId)) {
                 checkVariantChange(player);
@@ -178,6 +197,15 @@ public class RegionMusicListener implements Listener {
         RegionConfig regionConfig = findMusicForRegions(regions, regionManager, worldName);
 
         if (regionConfig != null) {
+            // Periodically suppress vanilla biome music — but only when our own
+            // track uses a non-MUSIC source. If the active track is on MUSIC,
+            // the stop would also kill our playback (both share the source),
+            // so we only do a single stop in MusicManager#playTrack and accept
+            // possible vanilla overlap until the next loop.
+            if (plugin.getConfigManager().isStopVanillaMusic()) {
+                tickVanillaStop(player);
+            }
+
             VariantType activeVariant = resolveVariant(player, regionConfig);
             String regionKey = buildRegionKey(regionConfig, activeVariant);
             String currentKey = playerCurrentRegion.get(playerId);
@@ -267,6 +295,7 @@ public class RegionMusicListener implements Listener {
     private void handleNoMusicRegion(Player player) {
         UUID playerId = player.getUniqueId();
         cancelTransition(playerId);
+        vanillaStopCounter.remove(playerId);
 
         String previousRegion = playerCurrentRegion.remove(playerId);
         if (previousRegion != null) {
@@ -293,6 +322,28 @@ public class RegionMusicListener implements Listener {
 
         Long previous = playerLastPosition.put(player.getUniqueId(), packed);
         return previous == null || previous != packed;
+    }
+
+    // --- Vanilla music suppression ---
+
+    /**
+     * Throttled vanilla-music stop. Sends a {@code stopSound(MUSIC source)}
+     * packet every {@link #VANILLA_STOP_INTERVAL} check cycles — but ONLY
+     * when the player's active region track is on a non-MUSIC source.
+     * If our own track is on MUSIC, calling stop here would silence it too
+     * (both share the source), so we skip the periodic stop and rely on the
+     * single per-track stop in {@link MusicManager#playTrack}.
+     */
+    private void tickVanillaStop(Player player) {
+        RegionConfig active = musicManager.getCurrentRegionConfig(player);
+        if (active != null && active.soundSource() == Sound.Source.MUSIC) return;
+
+        UUID playerId = player.getUniqueId();
+        int count = vanillaStopCounter.merge(playerId, 1, Integer::sum);
+        if (count >= VANILLA_STOP_INTERVAL) {
+            vanillaStopCounter.put(playerId, 0);
+            player.stopSound(SoundStop.source(Sound.Source.MUSIC));
+        }
     }
 
     // --- Variant resolution ---
@@ -422,12 +473,14 @@ public class RegionMusicListener implements Listener {
         cancelAllTransitions();
         playerCurrentRegion.clear();
         playerLastPosition.clear();
+        vanillaStopCounter.clear();
         forceCheck.clear();
     }
 
     public void clearPlayerRegion(UUID playerId) {
         playerCurrentRegion.remove(playerId);
         playerLastPosition.remove(playerId);
+        vanillaStopCounter.remove(playerId);
         forceCheck.put(playerId, true);
         cancelTransition(playerId);
     }
