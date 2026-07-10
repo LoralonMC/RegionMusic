@@ -1,16 +1,20 @@
+# ============================================================
 # RegionMusic Configuration
-# ========================
-#
+# ============================================================
+# Play music for players when they enter WorldGuard regions.
+# Player-facing messages live in messages.yml, not here.
+
 # ============================================================
 # PLACEHOLDERAPI PLACEHOLDERS
 # ============================================================
 # If PlaceholderAPI is installed, the following placeholders are available:
 #
-#   %regionmusic_enabled%          - "true" if music is enabled for player, "false" if disabled
+#   %regionmusic_enabled%          - "true" if music is enabled for the player
 #   %regionmusic_toggled%          - "true" if music is toggled OFF (inverse of enabled)
 #   %regionmusic_playing%          - "true" if music is currently playing
 #   %regionmusic_sound%            - Current sound key (e.g., "minecraft:music_disc.cat")
-#   %regionmusic_region%           - Current region name
+#   %regionmusic_region%           - Current region's display name (falls back to region id)
+#   %regionmusic_region_id%        - Current region's raw id (always unformatted)
 #   %regionmusic_world%            - Current world name
 #   %regionmusic_volume%           - Current effective volume as percentage (e.g., "80")
 #   %regionmusic_volume_decimal%   - Current effective volume as decimal (e.g., "0.80")
@@ -18,46 +22,66 @@
 #   %regionmusic_track%            - Current track display name (or sound key if no name set)
 #   %regionmusic_variant%          - Active variant (night/rain/thunder) or empty
 #
-# These are useful for custom menus (e.g., DeluxeMenus) to show music status or create toggle buttons.
+# Useful for menus (e.g., DeluxeMenus) to show status or build toggle buttons.
 
 # ============================================================
 # GENERAL SETTINGS
 # ============================================================
 
-# How often to check player positions (in ticks, 20 ticks = 1 second)
+# How often to re-check variant transitions (weather / time-of-day) for players
+# who are standing inside a music region (in ticks; 20 ticks = 1 second).
+#
+# Region transitions themselves are detected via PlayerMoveEvent — they do NOT
+# wait for this interval. This setting only governs how quickly a stationary
+# player notices a weather/time change, and how often the throttled vanilla-
+# music stop fires (every 5 cycles).
 check-interval: 10
 
-# Whether to check regions on these events (can disable for performance)
+# Whether to also re-check region on each of these events.
+# Disabling any of these makes that event rely solely on PlayerMoveEvent.
 events:
   player-join: true
   player-teleport: true
   player-respawn: true
   player-change-world: true
 
-# Debug mode - logs region enter/exit events to console
+# Debug mode — logs region enter/exit / variant changes / track advances to console.
 debug: false
 
-# Delay (in ticks) before starting music when transitioning between music regions.
-# Only applies to region-to-region transitions (not silence-to-music or variant changes).
+# Delay (in ticks) before starting music when crossing between two music regions.
+# Only applies to region-to-region transitions (NOT silence-to-music or variant changes).
 # Set to 0 for instant transitions.
 transition-delay: 0
 
 # Stop vanilla Minecraft background music before playing region music.
-# Uses stopSound(Source.MUSIC) to silence ambient music.
+#
+# How this works in practice:
+#   - When false (default): vanilla biome music can play alongside region music.
+#   - When true and the region uses category: MUSIC (the default): the plugin
+#     fires a single stop right before each track. Vanilla music may still leak
+#     in until the next track boundary, but you avoid self-silencing.
+#   - When true and the region uses category: RECORD (or any non-MUSIC source):
+#     the plugin throttles a stop every ~2.5s, fully suppressing vanilla music.
+#
+# TL;DR: for the cleanest experience, set stop-vanilla-music: true AND set
+#        category: RECORD on each music region.
 stop-vanilla-music: false
 
 # ============================================================
 # REGIONS
 # ============================================================
-# Format:
+# Format (single sound):
 #   regions:
 #     <world_name>:
 #       <region_name>:
+#         display-name: "Friendly Name"   # Optional - shown to players (defaults to the region id)
+#                                         #            MiniMessage formatting supported, e.g.
+#                                         #            "<#FCD472>The Spawn"
 #         sound: "namespace:sound.name"  # Required - the sound to play
-#         name: "Display Name"            # Optional - friendly name shown to players (defaults to sound key)
-#         volume: 1.0                     # Required - volume from 0.0 to 1.0
+#         name: "Track Name"              # Optional - track display name (defaults to sound key)
+#         volume: 1.0                     # Required - 0.0 to 1.0
 #         loop: true                      # Required - whether to loop the music
-#         duration: 180                   # Required if loop=true - duration in seconds before looping
+#         duration: 180                   # Required if loop=true - seconds before looping
 #         category: MUSIC                 # Optional - sound category (default: MUSIC)
 #         priority: 10                    # Optional - override WorldGuard region priority for music
 #
@@ -65,7 +89,7 @@ stop-vanilla-music: false
 #   regions:
 #     <world_name>:
 #       <region_name>:
-#         volume: 0.8
+#         volume: 0.8                     # Base volume for the region
 #         loop: true
 #         order: shuffle                  # Optional - sequential (default) or shuffle
 #         sounds:
@@ -75,8 +99,13 @@ stop-vanilla-music: false
 #           - sound: "minecraft:music_disc.far"
 #             name: "Far"
 #             duration: 174
+#             volume: 0.5                 # Optional - per-track override of region volume
 #
-# Time/weather variant format (under any region):
+# Per-track volume: each playlist entry can specify its own volume (0.0-1.0)
+# that REPLACES the region's base volume for just that track. The player's
+# personal volume always scales on top.
+#
+# Time/weather variants (under any region):
 #   regions:
 #     <world_name>:
 #       <region_name>:
@@ -98,41 +127,54 @@ stop-vanilla-music: false
 # Variants can also use the sounds: list format for playlists.
 # Variant priority: thunder > rain > night > default
 #
+# Whole-world music: use the special region id "__global__" — RegionMusic looks
+# this up explicitly even though it isn't in WorldGuard's applicable-regions list.
+# Pair with a display-name so messages don't show the literal "__global__" to players:
+#   regions:
+#     world:
+#       __global__:
+#         display-name: "The Overworld"
+#         sound: "custom:music.overworld"
+#         volume: 0.8
+#         loop: true
+#         duration: 240
+#
 # Sound categories: MASTER, MUSIC, RECORD, WEATHER, BLOCK, HOSTILE, NEUTRAL, PLAYER, AMBIENT, VOICE
 #
-# Priority: By default, the plugin uses WorldGuard's region priority to determine which music plays
-#           when a player is in multiple regions. You can override this per-region with the priority field.
-#           Higher priority = takes precedence.
+# Priority: by default RegionMusic uses WorldGuard's region priority to pick
+# which music plays when a player is in multiple regions. Override per region
+# with the priority field. Higher priority = takes precedence.
 #
 # Sound can be:
-#   - A custom sound from your resource pack (e.g., "custom:music.forest_theme")
-#   - A vanilla music disc (e.g., "minecraft:music_disc.cat")
-#   - Any vanilla sound event (e.g., "minecraft:music.creative")
+#   - A custom sound from your resource pack  (e.g., "custom:music.forest_theme")
+#   - A vanilla music disc                    (e.g., "minecraft:music_disc.cat")
+#   - Any vanilla sound event                 (e.g., "minecraft:music.creative")
 #
-# Vanilla music disc sounds and their durations:
-#   - minecraft:music_disc.11      (71 seconds)
-#   - minecraft:music_disc.13      (178 seconds)
-#   - minecraft:music_disc.blocks  (345 seconds)
-#   - minecraft:music_disc.cat     (186 seconds)
-#   - minecraft:music_disc.chirp   (185 seconds)
-#   - minecraft:music_disc.far     (174 seconds)
-#   - minecraft:music_disc.mall    (197 seconds)
-#   - minecraft:music_disc.mellohi (96 seconds)
-#   - minecraft:music_disc.pigstep (149 seconds)
-#   - minecraft:music_disc.stal    (150 seconds)
-#   - minecraft:music_disc.strad   (188 seconds)
-#   - minecraft:music_disc.wait    (238 seconds)
-#   - minecraft:music_disc.ward    (251 seconds)
-#   - minecraft:music_disc.otherside (195 seconds)
-#   - minecraft:music_disc.5       (178 seconds)
-#   - minecraft:music_disc.relic   (218 seconds)
-#   - minecraft:music_disc.precipice (299 seconds)
-#   - minecraft:music_disc.creator (176 seconds)
-#   - minecraft:music_disc.creator_music_box (73 seconds)
+# Vanilla music disc sound keys (durations are approximate):
+#   minecraft:music_disc.11              (71s)
+#   minecraft:music_disc.13              (178s)
+#   minecraft:music_disc.5               (178s)
+#   minecraft:music_disc.blocks          (345s)
+#   minecraft:music_disc.cat             (186s)
+#   minecraft:music_disc.chirp           (185s)
+#   minecraft:music_disc.creator         (176s)
+#   minecraft:music_disc.creator_music_box (73s)
+#   minecraft:music_disc.far             (174s)
+#   minecraft:music_disc.mall            (197s)
+#   minecraft:music_disc.mellohi         (96s)
+#   minecraft:music_disc.otherside       (195s)
+#   minecraft:music_disc.pigstep         (149s)
+#   minecraft:music_disc.precipice       (299s)
+#   minecraft:music_disc.relic           (218s)
+#   minecraft:music_disc.stal            (150s)
+#   minecraft:music_disc.strad           (188s)
+#   minecraft:music_disc.wait            (238s)
+#   minecraft:music_disc.ward            (251s)
 
 regions:
   world:
     example_region:
+      display-name: "Example Region"
       sound: "minecraft:music_disc.cat"
       name: "Cat"
       volume: 0.8

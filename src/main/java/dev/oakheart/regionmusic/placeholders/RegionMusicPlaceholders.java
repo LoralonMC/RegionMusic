@@ -1,6 +1,10 @@
-package dev.oakheart.regionmusic;
+package dev.oakheart.regionmusic.placeholders;
 
-import dev.oakheart.regionmusic.RegionConfig.VariantType;
+import dev.oakheart.regionmusic.RegionMusic;
+import dev.oakheart.regionmusic.managers.MusicManager;
+import dev.oakheart.regionmusic.model.RegionConfig;
+import dev.oakheart.regionmusic.model.RegionConfig.VariantType;
+import dev.oakheart.regionmusic.model.RegionTrack;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
@@ -41,7 +45,6 @@ public class RegionMusicPlaceholders extends PlaceholderExpansion {
             return null;
         }
 
-        // Placeholders that work for offline players
         switch (params.toLowerCase()) {
             case "enabled" -> {
                 return String.valueOf(plugin.getPlayerDataManager().isMusicEnabled(offlinePlayer.getUniqueId()));
@@ -54,7 +57,6 @@ public class RegionMusicPlaceholders extends PlaceholderExpansion {
             }
         }
 
-        // Placeholders that require online player
         Player player = offlinePlayer.getPlayer();
         if (player == null) {
             return null;
@@ -68,10 +70,15 @@ public class RegionMusicPlaceholders extends PlaceholderExpansion {
         return switch (params.toLowerCase()) {
             case "playing" -> String.valueOf(currentConfig != null);
             case "sound" -> currentTrack != null ? currentTrack.soundKeyString() : "";
-            case "region" -> currentConfig != null ? currentConfig.regionId() : "";
+            case "region" -> currentConfig != null ? currentConfig.resolveDisplayName() : "";
+            case "region_id" -> currentConfig != null ? currentConfig.regionId() : "";
             case "world" -> currentConfig != null ? currentConfig.worldName() : "";
-            case "volume" -> currentConfig != null ? String.valueOf((int) (mm.getCurrentEffectiveVolume(player) * 100)) : "";
-            case "volume_decimal" -> currentConfig != null ? String.format("%.2f", mm.getCurrentEffectiveVolume(player)) : "";
+            case "volume" -> currentConfig != null
+                    ? String.valueOf((int) (mm.getCurrentEffectiveVolume(player) * 100))
+                    : "";
+            case "volume_decimal" -> currentConfig != null
+                    ? String.format("%.2f", mm.getCurrentEffectiveVolume(player))
+                    : "";
             case "track" -> currentTrack != null ? currentTrack.displayName() : "";
             case "variant" -> currentVariant != null ? currentVariant.name().toLowerCase() : "";
             default -> null;

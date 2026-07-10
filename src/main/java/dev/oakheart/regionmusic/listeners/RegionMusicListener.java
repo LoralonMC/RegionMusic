@@ -6,15 +6,15 @@ import com.sk89q.worldguard.protection.ApplicableRegionSet;
 import com.sk89q.worldguard.protection.managers.RegionManager;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
 import com.sk89q.worldguard.protection.regions.RegionContainer;
-import dev.oakheart.regionmusic.MusicManager;
-import dev.oakheart.regionmusic.RegionConfig;
-import dev.oakheart.regionmusic.RegionConfig.VariantType;
 import dev.oakheart.regionmusic.RegionMusic;
+import dev.oakheart.regionmusic.managers.MusicManager;
+import dev.oakheart.regionmusic.model.RegionConfig;
+import dev.oakheart.regionmusic.model.RegionConfig.VariantType;
+import dev.oakheart.regionmusic.model.RegionKey;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -22,6 +22,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -32,34 +33,35 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * Region transitions are detected via PlayerMoveEvent (with a block-changed
+ * guard) and the various forced events (join, teleport, respawn, world change).
+ * A slower periodic timer handles variant re-evaluation (weather/time
+ * transitions affect stationary players) and the throttled vanilla-music stop.
+ */
 public class RegionMusicListener implements Listener {
 
     private static final long JOIN_CHECK_DELAY_TICKS = 10L;
     private static final long EVENT_CHECK_DELAY_TICKS = 1L;
 
     /**
-     * How many check cycles between periodic vanilla-music stops.
-     * With the default check-interval of 10 ticks (0.5s), this means a
-     * stopSound packet every ~2.5 seconds. Only relevant when the active
-     * region track uses a non-MUSIC source — see {@link #tickVanillaStop}.
+     * Vanilla-music stop interval, in periodic-timer cycles. At the default
+     * check-interval of 10 ticks, this fires every ~2.5s.
+     * Only relevant when the region's track uses a non-MUSIC source — see
+     * {@link #tickVanillaStop}.
      */
     private static final int VANILLA_STOP_INTERVAL = 5;
 
     private final RegionMusic plugin;
     private final MusicManager musicManager;
 
-    // Tracks "world:regionId:VARIANT" (or "world:regionId" for default)
-    private final Map<UUID, String> playerCurrentRegion = new HashMap<>();
-    // Tracks last checked block position to skip stationary players (packed x/y/z/world)
-    private final Map<UUID, Long> playerLastPosition = new HashMap<>();
-    // Counts check cycles per player for throttling periodic vanilla-music stops
+    private final Map<UUID, RegionKey> playerCurrentRegion = new HashMap<>();
     private final Map<UUID, Integer> vanillaStopCounter = new HashMap<>();
-    // Tracks pending transition-delay tasks
     private final Map<UUID, BukkitTask> transitionTasks = new HashMap<>();
-    // Tracks players that need a forced re-check (e.g. after event or clearPlayerRegion)
-    private final Map<UUID, Boolean> forceCheck = new HashMap<>();
+    // In-memory variant override for /regionmusic test (admin-only); not persisted.
+    private final Map<UUID, VariantType> variantOverrides = new HashMap<>();
 
-    private BukkitTask checkTask;
+    private BukkitTask variantTask;
 
     public RegionMusicListener(RegionMusic plugin, MusicManager musicManager) {
         this.plugin = plugin;
@@ -68,20 +70,20 @@ public class RegionMusicListener implements Listener {
 
     public void startChecking() {
         int interval = plugin.getConfigManager().getCheckInterval();
-        checkTask = new BukkitRunnable() {
+        variantTask = new BukkitRunnable() {
             @Override
             public void run() {
                 for (Player player : Bukkit.getOnlinePlayers()) {
-                    checkPlayerRegion(player, false);
+                    tickPlayer(player);
                 }
             }
         }.runTaskTimer(plugin, 20L, interval);
     }
 
     public void stopChecking() {
-        if (checkTask != null) {
-            checkTask.cancel();
-            checkTask = null;
+        if (variantTask != null) {
+            variantTask.cancel();
+            variantTask = null;
         }
     }
 
@@ -89,20 +91,26 @@ public class RegionMusicListener implements Listener {
         stopChecking();
         cancelAllTransitions();
         playerCurrentRegion.clear();
-        playerLastPosition.clear();
         vanillaStopCounter.clear();
-        forceCheck.clear();
         startChecking();
     }
 
     // --- Events ---
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPlayerMove(PlayerMoveEvent event) {
+        // Cheap guard: only run the region check when the player has actually
+        // moved to a different block. PlayerMoveEvent fires for sub-block
+        // movement (head-turns alone don't fire it; small position deltas do).
+        if (!event.hasChangedBlock()) return;
+        checkPlayerRegion(event.getPlayer(), false);
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
+        plugin.getPlayerDataManager().preloadDiscovered(event.getPlayer());
         if (!plugin.getConfigManager().isEventPlayerJoin()) return;
-        forceCheck.put(event.getPlayer().getUniqueId(), true);
-        Bukkit.getScheduler().runTaskLater(plugin, () ->
-                checkPlayerRegion(event.getPlayer(), true), JOIN_CHECK_DELAY_TICKS);
+        scheduleForcedCheck(event.getPlayer(), JOIN_CHECK_DELAY_TICKS);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -110,72 +118,79 @@ public class RegionMusicListener implements Listener {
         Player player = event.getPlayer();
         UUID playerId = player.getUniqueId();
         playerCurrentRegion.remove(playerId);
-        playerLastPosition.remove(playerId);
         vanillaStopCounter.remove(playerId);
-        forceCheck.remove(playerId);
+        variantOverrides.remove(playerId);
         cancelTransition(playerId);
         musicManager.cleanupPlayer(player);
+        plugin.getPlayerDataManager().unloadDiscovered(playerId);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerTeleport(PlayerTeleportEvent event) {
         if (!plugin.getConfigManager().isEventPlayerTeleport()) return;
-        forceCheck.put(event.getPlayer().getUniqueId(), true);
-        Bukkit.getScheduler().runTaskLater(plugin, () ->
-                checkPlayerRegion(event.getPlayer(), true), EVENT_CHECK_DELAY_TICKS);
+        scheduleForcedCheck(event.getPlayer(), EVENT_CHECK_DELAY_TICKS);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
         if (!plugin.getConfigManager().isEventPlayerChangeWorld()) return;
-        forceCheck.put(event.getPlayer().getUniqueId(), true);
-        Bukkit.getScheduler().runTaskLater(plugin, () ->
-                checkPlayerRegion(event.getPlayer(), true), EVENT_CHECK_DELAY_TICKS);
+        scheduleForcedCheck(event.getPlayer(), EVENT_CHECK_DELAY_TICKS);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerRespawn(PlayerRespawnEvent event) {
         if (!plugin.getConfigManager().isEventPlayerRespawn()) return;
-        forceCheck.put(event.getPlayer().getUniqueId(), true);
-        Bukkit.getScheduler().runTaskLater(plugin, () ->
-                checkPlayerRegion(event.getPlayer(), true), EVENT_CHECK_DELAY_TICKS);
+        scheduleForcedCheck(event.getPlayer(), EVENT_CHECK_DELAY_TICKS);
     }
 
-    // --- Core logic ---
+    public void scheduleForcedCheck(Player player, long delayTicks) {
+        Bukkit.getScheduler().runTaskLater(plugin,
+                () -> checkPlayerRegion(player, true), delayTicks);
+    }
+
+    // --- Periodic tick (variant re-eval + vanilla-music suppression) ---
+
+    /**
+     * Runs every check-interval ticks for each online player. Cheap: no
+     * WorldGuard lookup, just re-evaluates variants for players already in a
+     * region and ticks the throttled vanilla-music stop counter.
+     */
+    private void tickPlayer(Player player) {
+        if (!player.isOnline()) return;
+
+        if (musicManager.isPreviewing(player)) return;
+
+        UUID playerId = player.getUniqueId();
+        if (!plugin.getPlayerDataManager().isMusicEnabled(playerId)) return;
+
+        // PlayerMoveEvent doesn't fire while riding (boats, horses, minecarts),
+        // so mounted players never trigger region transitions — music keeps
+        // looping after they've left, and never starts when they ride in. Fall
+        // back to a full region check on the periodic tick for riders only.
+        if (player.isInsideVehicle()) {
+            checkPlayerRegion(player, true);
+        }
+
+        if (!playerCurrentRegion.containsKey(playerId)) return;
+
+        if (plugin.getConfigManager().isStopVanillaMusic()) {
+            tickVanillaStop(player);
+        }
+
+        checkVariantChange(player);
+    }
+
+    // --- Core region check (called from PlayerMoveEvent + forced events) ---
 
     private void checkPlayerRegion(Player player, boolean forced) {
         if (!player.isOnline()) return;
 
         UUID playerId = player.getUniqueId();
 
-        // Consume force flag if set by an event
-        if (!forced && forceCheck.remove(playerId) != null) {
-            forced = true;
-        }
-
-        // Skip if previewing
         if (musicManager.isPreviewing(player)) return;
 
-        // Check if music disabled
         if (!plugin.getPlayerDataManager().isMusicEnabled(playerId)) {
             handleNoMusicRegion(player);
-            return;
-        }
-
-        // Skip stationary players in the periodic check (not forced by events).
-        // Variant checks (weather/time) still need to run, so only skip if player
-        // has no variants configured for their current region.
-        if (!forced && !hasMovedSinceLastCheck(player)) {
-            // Still suppress vanilla music periodically when our active track
-            // is on a non-MUSIC source (so the stop won't kill it).
-            if (plugin.getConfigManager().isStopVanillaMusic()
-                    && playerCurrentRegion.containsKey(playerId)) {
-                tickVanillaStop(player);
-            }
-            // Still check for variant changes even when stationary
-            if (playerCurrentRegion.containsKey(playerId)) {
-                checkVariantChange(player);
-            }
             return;
         }
 
@@ -197,40 +212,25 @@ public class RegionMusicListener implements Listener {
         RegionConfig regionConfig = findMusicForRegions(regions, regionManager, worldName);
 
         if (regionConfig != null) {
-            // Periodically suppress vanilla biome music — but only when our own
-            // track uses a non-MUSIC source. If the active track is on MUSIC,
-            // the stop would also kill our playback (both share the source),
-            // so we only do a single stop in MusicManager#playTrack and accept
-            // possible vanilla overlap until the next loop.
-            if (plugin.getConfigManager().isStopVanillaMusic()) {
-                tickVanillaStop(player);
-            }
-
             VariantType activeVariant = resolveVariant(player, regionConfig);
-            String regionKey = buildRegionKey(regionConfig, activeVariant);
-            String currentKey = playerCurrentRegion.get(playerId);
+            RegionKey newKey = RegionKey.of(regionConfig, activeVariant);
+            RegionKey currentKey = playerCurrentRegion.get(playerId);
 
-            if (!regionKey.equals(currentKey)) {
-                boolean isRegionTransition = currentKey != null
-                        && !isSameRegionDifferentVariant(currentKey, regionKey);
+            if (!newKey.equals(currentKey)) {
+                boolean isRegionTransition = currentKey != null && !currentKey.isSameRegion(newKey);
 
-                // Cancel any pending transition
                 cancelTransition(playerId);
 
                 int delay = plugin.getConfigManager().getTransitionDelay();
 
-                // Only apply transition delay for region-to-region transitions
                 if (isRegionTransition && delay > 0) {
-                    // Stop current music immediately
                     musicManager.stopMusic(player);
                     playerCurrentRegion.remove(playerId);
 
-                    // Schedule delayed start
                     BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin, () -> {
                         transitionTasks.remove(playerId);
                         if (!player.isOnline()) return;
 
-                        // Re-verify the player is still in the target region
                         RegionConfig verify = findMusicForCurrentLocation(player);
                         if (verify != null && verify.isSameRegion(regionConfig)) {
                             VariantType verifyVariant = resolveVariant(player, verify);
@@ -247,20 +247,19 @@ public class RegionMusicListener implements Listener {
         }
     }
 
-    /**
-     * Checks for variant changes without doing a full WorldGuard region lookup.
-     * Used for stationary players who might be affected by time/weather changes.
-     */
+    /** Re-check variants without doing a full WorldGuard region lookup. */
     private void checkVariantChange(Player player) {
         UUID playerId = player.getUniqueId();
-        String currentKey = playerCurrentRegion.get(playerId);
+        RegionKey currentKey = playerCurrentRegion.get(playerId);
         if (currentKey == null) return;
 
         RegionConfig currentConfig = musicManager.getCurrentRegionConfig(player);
-        if (currentConfig == null || currentConfig.variants().isEmpty()) return;
+        if (currentConfig == null) return;
+        // No variants AND no admin override → nothing can change
+        if (currentConfig.variants().isEmpty() && variantOverrides.get(playerId) == null) return;
 
         VariantType activeVariant = resolveVariant(player, currentConfig);
-        String newKey = buildRegionKey(currentConfig, activeVariant);
+        RegionKey newKey = RegionKey.of(currentConfig, activeVariant);
 
         if (!newKey.equals(currentKey)) {
             playerCurrentRegion.put(playerId, newKey);
@@ -273,17 +272,15 @@ public class RegionMusicListener implements Listener {
 
     private void startMusicForRegion(Player player, RegionConfig regionConfig, VariantType activeVariant) {
         UUID playerId = player.getUniqueId();
-        String regionKey = buildRegionKey(regionConfig, activeVariant);
-
-        playerCurrentRegion.put(playerId, regionKey);
+        playerCurrentRegion.put(playerId, RegionKey.of(regionConfig, activeVariant));
         musicManager.playMusic(player, regionConfig, activeVariant);
 
-        // Discovery check
         boolean newDiscovery = plugin.getPlayerDataManager().discoverRegion(
                 player, regionConfig.worldName(), regionConfig.regionId());
         if (newDiscovery) {
             plugin.getMessageManager().send(player, "region-discovered",
-                    Placeholder.unparsed("region", regionConfig.regionId()),
+                    Placeholder.parsed("region", regionConfig.resolveDisplayName()),
+                    Placeholder.unparsed("region_id", regionConfig.regionId()),
                     Placeholder.unparsed("world", regionConfig.worldName()));
         }
 
@@ -297,42 +294,22 @@ public class RegionMusicListener implements Listener {
         cancelTransition(playerId);
         vanillaStopCounter.remove(playerId);
 
-        String previousRegion = playerCurrentRegion.remove(playerId);
-        if (previousRegion != null) {
+        RegionKey previousKey = playerCurrentRegion.remove(playerId);
+        if (previousKey != null) {
             musicManager.stopMusic(player);
-            plugin.debug(player.getName() + " left music region: " + previousRegion);
+            plugin.debug(player.getName() + " left music region: " + previousKey);
         }
-    }
-
-    // --- Position tracking ---
-
-    /**
-     * Checks if a player has moved to a different block since the last check.
-     * Updates the stored position. Uses packed long for zero-allocation comparison.
-     */
-    private boolean hasMovedSinceLastCheck(Player player) {
-        Location loc = player.getLocation();
-        // Pack block coords + world into a single long for fast comparison
-        // x: 26 bits, z: 26 bits, y: 12 bits = 64 bits (world change detected via world hash)
-        long packed = ((long) loc.getBlockX() & 0x3FFFFFF)
-                | (((long) loc.getBlockZ() & 0x3FFFFFF) << 26)
-                | (((long) loc.getBlockY() & 0xFFF) << 52);
-        // XOR in world identity to detect world changes
-        packed ^= (long) System.identityHashCode(loc.getWorld()) * 0x9E3779B97F4A7C15L;
-
-        Long previous = playerLastPosition.put(player.getUniqueId(), packed);
-        return previous == null || previous != packed;
     }
 
     // --- Vanilla music suppression ---
 
     /**
-     * Throttled vanilla-music stop. Sends a {@code stopSound(MUSIC source)}
-     * packet every {@link #VANILLA_STOP_INTERVAL} check cycles — but ONLY
-     * when the player's active region track is on a non-MUSIC source.
-     * If our own track is on MUSIC, calling stop here would silence it too
-     * (both share the source), so we skip the periodic stop and rely on the
-     * single per-track stop in {@link MusicManager#playTrack}.
+     * Throttled vanilla-music stop. Sends a stopSound(MUSIC source) packet
+     * every {@link #VANILLA_STOP_INTERVAL} timer cycles — but ONLY when the
+     * player's active region track is on a non-MUSIC source. If our own track
+     * is on MUSIC, the stop would silence it too (both share the source), so
+     * we skip the periodic stop and rely on the single per-track stop in
+     * {@link MusicManager#playTrack}.
      */
     private void tickVanillaStop(Player player) {
         RegionConfig active = musicManager.getCurrentRegionConfig(player);
@@ -349,6 +326,12 @@ public class RegionMusicListener implements Listener {
     // --- Variant resolution ---
 
     private VariantType resolveVariant(Player player, RegionConfig config) {
+        // Admin override takes precedence over weather/time, even if the region
+        // doesn't have that variant configured (resolveActiveTracks falls back
+        // to the default tracks in that case).
+        VariantType override = variantOverrides.get(player.getUniqueId());
+        if (override != null) return override;
+
         if (config.variants().isEmpty()) return null;
 
         World world = player.getWorld();
@@ -369,29 +352,18 @@ public class RegionMusicListener implements Listener {
         return null;
     }
 
-    // --- Region key helpers ---
+    // --- Variant override (admin /test command) ---
 
-    private String buildRegionKey(RegionConfig config, VariantType variant) {
-        String key = config.worldName() + ":" + config.regionId();
-        if (variant != null) {
-            key += ":" + variant.name();
-        }
-        return key;
+    public void setVariantOverride(UUID playerId, VariantType variant) {
+        variantOverrides.put(playerId, variant);
     }
 
-    private boolean isSameRegionDifferentVariant(String key1, String key2) {
-        String base1 = extractBaseRegionKey(key1);
-        String base2 = extractBaseRegionKey(key2);
-        return base1.equals(base2);
+    public void clearVariantOverride(UUID playerId) {
+        variantOverrides.remove(playerId);
     }
 
-    private String extractBaseRegionKey(String key) {
-        // Format: "world:regionId" or "world:regionId:VARIANT"
-        int firstColon = key.indexOf(':');
-        if (firstColon < 0) return key;
-        int secondColon = key.indexOf(':', firstColon + 1);
-        if (secondColon < 0) return key;
-        return key.substring(0, secondColon);
+    public VariantType getVariantOverride(UUID playerId) {
+        return variantOverrides.get(playerId);
     }
 
     // --- Region lookup helpers ---
@@ -472,16 +444,22 @@ public class RegionMusicListener implements Listener {
         stopChecking();
         cancelAllTransitions();
         playerCurrentRegion.clear();
-        playerLastPosition.clear();
         vanillaStopCounter.clear();
-        forceCheck.clear();
     }
 
+    /**
+     * Forces the next check for this player to re-evaluate the region.
+     * Used by /toggle, /volume, /test commands after the player's state changes.
+     */
     public void clearPlayerRegion(UUID playerId) {
         playerCurrentRegion.remove(playerId);
-        playerLastPosition.remove(playerId);
         vanillaStopCounter.remove(playerId);
-        forceCheck.put(playerId, true);
         cancelTransition(playerId);
+
+        Player player = Bukkit.getPlayer(playerId);
+        if (player != null && player.isOnline()) {
+            scheduleForcedCheck(player, EVENT_CHECK_DELAY_TICKS);
+        }
     }
+
 }

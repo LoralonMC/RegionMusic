@@ -3,6 +3,9 @@ package dev.oakheart.regionmusic;
 import dev.oakheart.regionmusic.commands.RegionMusicCommand;
 import dev.oakheart.regionmusic.config.ConfigManager;
 import dev.oakheart.regionmusic.listeners.RegionMusicListener;
+import dev.oakheart.regionmusic.managers.MusicManager;
+import dev.oakheart.regionmusic.managers.PlayerDataManager;
+import dev.oakheart.regionmusic.placeholders.RegionMusicPlaceholders;
 import dev.oakheart.message.MessageManager;
 import dev.oakheart.util.DebugLogger;
 import org.bstats.bukkit.Metrics;
@@ -77,6 +80,12 @@ public final class RegionMusic extends JavaPlugin {
         regionListener = new RegionMusicListener(this, musicManager);
         getServer().getPluginManager().registerEvents(regionListener, this);
         regionListener.startChecking();
+
+        // Cover players who were already online (e.g. plugin hot-reload):
+        // PlayerJoinEvent won't fire for them, so preload their discovery cache here.
+        for (var player : getServer().getOnlinePlayers()) {
+            playerDataManager.preloadDiscovered(player);
+        }
     }
 
     private void registerCommands() {
@@ -103,6 +112,13 @@ public final class RegionMusic extends JavaPlugin {
         playerDataManager.reload();
         musicManager.cleanup();
         regionListener.refresh();
+
+        // cleanup() + refresh() stop all music and forget everyone's region;
+        // music only restarts on a block-boundary cross, so stationary players
+        // would sit in silence until they move. Re-check everyone.
+        for (var player : getServer().getOnlinePlayers()) {
+            regionListener.scheduleForcedCheck(player, 1L);
+        }
 
         if (configManager.isDebug()) {
             getLogger().info("Debug mode is enabled.");

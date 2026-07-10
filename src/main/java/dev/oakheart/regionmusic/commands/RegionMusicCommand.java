@@ -7,19 +7,24 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import dev.oakheart.command.CommandRegistrar;
 import dev.oakheart.message.MessageManager;
-import dev.oakheart.regionmusic.MusicManager;
-import dev.oakheart.regionmusic.RegionConfig;
 import dev.oakheart.regionmusic.RegionMusic;
-import dev.oakheart.regionmusic.RegionTrack;
+import dev.oakheart.regionmusic.managers.MusicManager;
+import dev.oakheart.regionmusic.model.RegionConfig;
+import dev.oakheart.regionmusic.model.RegionConfig.VariantType;
+import dev.oakheart.regionmusic.model.RegionTrack;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
 import net.kyori.adventure.key.Key;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +32,28 @@ import java.util.Map;
 public class RegionMusicCommand {
 
     private final RegionMusic plugin;
+
+    private static final List<String> VANILLA_MUSIC_DISCS = List.of(
+            "minecraft:music_disc.11",
+            "minecraft:music_disc.13",
+            "minecraft:music_disc.5",
+            "minecraft:music_disc.blocks",
+            "minecraft:music_disc.cat",
+            "minecraft:music_disc.chirp",
+            "minecraft:music_disc.creator",
+            "minecraft:music_disc.creator_music_box",
+            "minecraft:music_disc.far",
+            "minecraft:music_disc.mall",
+            "minecraft:music_disc.mellohi",
+            "minecraft:music_disc.otherside",
+            "minecraft:music_disc.pigstep",
+            "minecraft:music_disc.precipice",
+            "minecraft:music_disc.relic",
+            "minecraft:music_disc.stal",
+            "minecraft:music_disc.strad",
+            "minecraft:music_disc.wait",
+            "minecraft:music_disc.ward"
+    );
 
     public RegionMusicCommand(RegionMusic plugin) {
         this.plugin = plugin;
@@ -47,6 +74,7 @@ public class RegionMusicCommand {
                 .then(buildStatusCommand())
                 .then(buildVolumeCommand())
                 .then(buildPreviewCommand())
+                .then(buildTestCommand())
                 .then(buildListCommand())
                 .then(Commands.literal("help")
                         .executes(ctx -> {
@@ -224,7 +252,8 @@ public class RegionMusicCommand {
                                 RegionTrack track = mm.getCurrentTrack(target);
                                 messages().sendCommand(ctx.getSource().getSender(), "status-playing-for",
                                         Placeholder.unparsed("player", target.getName()),
-                                        Placeholder.unparsed("region", currentConfig.regionId()),
+                                        Placeholder.parsed("region", currentConfig.resolveDisplayName()),
+                                        Placeholder.unparsed("region_id", currentConfig.regionId()),
                                         Placeholder.unparsed("world", currentConfig.worldName()),
                                         Placeholder.unparsed("sound", track != null ? track.displayName() : "unknown"),
                                         Placeholder.unparsed("volume",
@@ -246,7 +275,8 @@ public class RegionMusicCommand {
         if (currentConfig != null) {
             RegionTrack track = mm.getCurrentTrack(target);
             messages().sendCommand(sender, "status-playing",
-                    Placeholder.unparsed("region", currentConfig.regionId()),
+                    Placeholder.parsed("region", currentConfig.resolveDisplayName()),
+                    Placeholder.unparsed("region_id", currentConfig.regionId()),
                     Placeholder.unparsed("world", currentConfig.worldName()),
                     Placeholder.unparsed("sound", track != null ? track.displayName() : "unknown"),
                     Placeholder.unparsed("volume",
@@ -335,6 +365,7 @@ public class RegionMusicCommand {
                         })
                 )
                 .then(Commands.argument("sound", StringArgumentType.string())
+                        .suggests(this::suggestSounds)
                         .executes(ctx -> {
                             Player player = (Player) ctx.getSource().getSender();
                             String soundStr = StringArgumentType.getString(ctx, "sound");
@@ -352,6 +383,35 @@ public class RegionMusicCommand {
                 .build();
     }
 
+    private java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions> suggestSounds(
+            com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx,
+            com.mojang.brigadier.suggestion.SuggestionsBuilder builder) {
+        String partial = builder.getRemaining().toLowerCase();
+
+        // Configured region sounds (current playlist + variants) — deduped
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        for (Map<String, RegionConfig> worldRegions : plugin.getConfigManager().getRegionData().values()) {
+            for (RegionConfig region : worldRegions.values()) {
+                for (RegionTrack track : region.tracks()) {
+                    seen.add(track.soundKeyString());
+                }
+                for (List<RegionTrack> variant : region.variants().values()) {
+                    for (RegionTrack track : variant) {
+                        seen.add(track.soundKeyString());
+                    }
+                }
+            }
+        }
+        seen.addAll(VANILLA_MUSIC_DISCS);
+
+        for (String sound : seen) {
+            if (sound.toLowerCase().startsWith(partial)) {
+                builder.suggest(sound);
+            }
+        }
+        return builder.buildFuture();
+    }
+
     private int executePreview(Player player, String soundStr, float volume) {
         Key soundKey;
         try {
@@ -365,6 +425,48 @@ public class RegionMusicCommand {
         plugin.getMusicManager().startPreview(player, soundKey, volume);
         messages().sendCommand(player, "preview-started",
                 Placeholder.unparsed("sound", soundStr));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    // --- Variant test (admin) ---
+
+    private LiteralCommandNode<CommandSourceStack> buildTestCommand() {
+        return Commands.literal("test")
+                .requires(source -> source.getSender() instanceof Player
+                        && source.getSender().hasPermission("regionmusic.admin"))
+                .executes(ctx -> {
+                    Player player = (Player) ctx.getSource().getSender();
+                    VariantType current = plugin.getRegionListener().getVariantOverride(player.getUniqueId());
+                    if (current == null) {
+                        messages().sendCommand(player, "test-variant-none");
+                    } else {
+                        messages().sendCommand(player, "test-variant-set",
+                                Placeholder.unparsed("variant", current.name().toLowerCase()));
+                    }
+                    return Command.SINGLE_SUCCESS;
+                })
+                .then(Commands.literal("clear")
+                        .executes(ctx -> {
+                            Player player = (Player) ctx.getSource().getSender();
+                            plugin.getRegionListener().clearVariantOverride(player.getUniqueId());
+                            plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
+                            messages().sendCommand(player, "test-variant-cleared");
+                            return Command.SINGLE_SUCCESS;
+                        })
+                )
+                .then(Commands.literal("night").executes(ctx -> applyOverride(ctx, VariantType.NIGHT)))
+                .then(Commands.literal("rain").executes(ctx -> applyOverride(ctx, VariantType.RAIN)))
+                .then(Commands.literal("thunder").executes(ctx -> applyOverride(ctx, VariantType.THUNDER)))
+                .build();
+    }
+
+    private int applyOverride(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx,
+                              VariantType variant) {
+        Player player = (Player) ctx.getSource().getSender();
+        plugin.getRegionListener().setVariantOverride(player.getUniqueId(), variant);
+        plugin.getRegionListener().clearPlayerRegion(player.getUniqueId());
+        messages().sendCommand(player, "test-variant-set",
+                Placeholder.unparsed("variant", variant.name().toLowerCase()));
         return Command.SINGLE_SUCCESS;
     }
 
@@ -406,11 +508,13 @@ public class RegionMusicCommand {
 
                             if (regionId.equals(currentRegionId) && worldName.equals(currentWorldName)) {
                                 messages().sendCommand(sender, "list-entry-current",
-                                        Placeholder.unparsed("region", regionId),
+                                        Placeholder.parsed("region", config.resolveDisplayName()),
+                                        Placeholder.unparsed("region_id", regionId),
                                         Placeholder.unparsed("sound", sound));
                             } else {
                                 messages().sendCommand(sender, "list-entry",
-                                        Placeholder.unparsed("region", regionId),
+                                        Placeholder.parsed("region", config.resolveDisplayName()),
+                                        Placeholder.unparsed("region_id", regionId),
                                         Placeholder.unparsed("sound", sound));
                             }
                         }
@@ -423,26 +527,48 @@ public class RegionMusicCommand {
 
     // --- Help ---
 
+    private static final List<String> ADMIN_HELP_KEYS = List.of(
+            "help-header",
+            "help-reload",
+            "help-toggle",
+            "help-toggle-player",
+            "help-status",
+            "help-status-player",
+            "help-volume",
+            "help-volume-set",
+            "help-volume-player",
+            "help-preview",
+            "help-preview-stop",
+            "help-test",
+            "help-list",
+            "help-help"
+    );
+
+    private static final List<String> PLAYER_HELP_KEYS = List.of(
+            "player-help-header",
+            "player-help-toggle",
+            "player-help-status",
+            "player-help-volume"
+    );
+
     private void sendHelp(CommandSender sender) {
-        messages().sendCommand(sender, "help-header");
-        messages().sendCommand(sender, "help-reload");
-        messages().sendCommand(sender, "help-toggle");
-        messages().sendCommand(sender, "help-toggle-player");
-        messages().sendCommand(sender, "help-status");
-        messages().sendCommand(sender, "help-status-player");
-        messages().sendCommand(sender, "help-volume");
-        messages().sendCommand(sender, "help-volume-set");
-        messages().sendCommand(sender, "help-volume-player");
-        messages().sendCommand(sender, "help-preview");
-        messages().sendCommand(sender, "help-preview-stop");
-        messages().sendCommand(sender, "help-list");
-        messages().sendCommand(sender, "help-help");
+        sendJoinedHelp(sender, ADMIN_HELP_KEYS);
     }
 
     private void sendPlayerHelp(CommandSender sender) {
-        messages().sendCommand(sender, "player-help-header");
-        messages().sendCommand(sender, "player-help-toggle");
-        messages().sendCommand(sender, "player-help-status");
-        messages().sendCommand(sender, "player-help-volume");
+        sendJoinedHelp(sender, PLAYER_HELP_KEYS);
+    }
+
+    private void sendJoinedHelp(CommandSender sender, List<String> keys) {
+        var config = messages().getConfig();
+        MiniMessage mm = MiniMessage.miniMessage();
+        List<Component> lines = new ArrayList<>(keys.size());
+        for (String key : keys) {
+            String text = config.getString("commands." + key, "");
+            if (text.isEmpty()) continue;
+            lines.add(mm.deserialize(text));
+        }
+        if (lines.isEmpty()) return;
+        sender.sendMessage(Component.join(JoinConfiguration.newlines(), lines));
     }
 }

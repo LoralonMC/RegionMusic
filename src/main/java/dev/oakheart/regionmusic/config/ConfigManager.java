@@ -1,10 +1,10 @@
 package dev.oakheart.regionmusic.config;
 
-import dev.oakheart.regionmusic.RegionConfig;
-import dev.oakheart.regionmusic.RegionConfig.PlaybackOrder;
-import dev.oakheart.regionmusic.RegionConfig.VariantType;
 import dev.oakheart.regionmusic.RegionMusic;
-import dev.oakheart.regionmusic.RegionTrack;
+import dev.oakheart.regionmusic.model.RegionConfig;
+import dev.oakheart.regionmusic.model.RegionConfig.PlaybackOrder;
+import dev.oakheart.regionmusic.model.RegionConfig.VariantType;
+import dev.oakheart.regionmusic.model.RegionTrack;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.sound.Sound;
 
@@ -24,7 +24,6 @@ public class ConfigManager {
     private final Path configFile;
     private dev.oakheart.config.ConfigManager config;
 
-    // General settings
     private boolean debug;
     private int checkInterval;
     private boolean eventPlayerJoin;
@@ -35,7 +34,7 @@ public class ConfigManager {
     private int transitionDelay;
     private boolean stopVanillaMusic;
 
-    // Cached region data: world -> region -> RegionConfig
+    // Cached, immutable region data: world -> region -> RegionConfig
     private Map<String, Map<String, RegionConfig>> regionData = Map.of();
 
     public ConfigManager(RegionMusic plugin) {
@@ -56,7 +55,7 @@ public class ConfigManager {
         }
 
         mergeDefaults();
-        validate(config);
+        validate(config); // initial load: log warnings, continue regardless
         cacheValues();
     }
 
@@ -92,20 +91,29 @@ public class ConfigManager {
         }
     }
 
+    /**
+     * Validates a config snapshot. Returns true if the config is structurally
+     * usable; false if there are fatal errors that prevent the plugin from
+     * running with it. Warnings are logged either way.
+     */
     private boolean validate(dev.oakheart.config.ConfigManager configToValidate) {
         List<String> warnings = new ArrayList<>();
+        List<String> fatals = new ArrayList<>();
 
         int interval = configToValidate.getInt("check-interval", 10);
         if (interval <= 0) {
-            warnings.add("check-interval must be > 0, defaulting to 10");
+            warnings.add("check-interval must be > 0, will default to 10");
         }
 
         int delay = configToValidate.getInt("transition-delay", 0);
         if (delay < 0) {
-            warnings.add("transition-delay must be >= 0, defaulting to 0");
+            warnings.add("transition-delay must be >= 0, will default to 0");
         }
 
-        // Validate regions
+        boolean stopVanilla = configToValidate.getBoolean("stop-vanilla-music", false);
+
+        int parseableRegions = 0;
+
         dev.oakheart.config.ConfigManager regionsSection = configToValidate.getSection("regions");
         if (regionsSection != null) {
             for (String worldName : regionsSection.getKeys(false)) {
@@ -116,34 +124,51 @@ public class ConfigManager {
                     dev.oakheart.config.ConfigManager regionSection = worldSection.getSection(regionId);
                     if (regionSection == null) continue;
 
-                    validateRegionSection(regionId, worldName, regionSection, warnings);
+                    boolean parseable = validateRegionSection(regionId, worldName, regionSection, warnings, stopVanilla);
+                    if (parseable) parseableRegions++;
                 }
             }
         }
 
-        if (!warnings.isEmpty()) {
+        if (regionsSection != null && !regionsSection.getKeys(false).isEmpty() && parseableRegions == 0) {
+            fatals.add("No regions are parseable — every configured region is malformed");
+        }
+
+        if (!warnings.isEmpty() || !fatals.isEmpty()) {
             logger.warning("=== Configuration Warnings ===");
             warnings.forEach(w -> logger.warning("  - " + w));
+            fatals.forEach(f -> logger.severe("  FATAL: " + f));
             logger.warning("==============================");
         }
 
-        return true;
+        return fatals.isEmpty();
     }
 
-    private void validateRegionSection(String regionId, String worldName,
-                                       dev.oakheart.config.ConfigManager section, List<String> warnings) {
+    /**
+     * Validates a single region section. Returns true if the section has the
+     * minimum structure needed to actually play music (a sound key + duration
+     * if loop=true). False means the section will be skipped at parse time.
+     */
+    private boolean validateRegionSection(String regionId, String worldName,
+                                          dev.oakheart.config.ConfigManager section, List<String> warnings,
+                                          boolean stopVanillaMusicEnabled) {
         String prefix = "Region " + regionId + " in " + worldName;
 
         boolean hasSingleSound = section.contains("sound");
         boolean hasSoundsList = section.contains("sounds");
 
         if (!hasSingleSound && !hasSoundsList) {
-            warnings.add(prefix + ": No sound or sounds specified");
-            return;
+            warnings.add(prefix + ": No sound or sounds specified (region will be skipped)");
+            return false;
         }
 
+        boolean parseable = false;
+
         if (hasSingleSound) {
-            validateSoundKey(section.getString("sound"), prefix, warnings);
+            String soundStr = section.getString("sound");
+            if (validateSoundKey(soundStr, prefix, warnings)) {
+                parseable = true;
+            }
         }
 
         if (hasSoundsList) {
@@ -154,39 +179,53 @@ public class ConfigManager {
             for (int i = 0; i < soundsList.size(); i++) {
                 var entry = soundsList.get(i);
                 Object soundObj = entry.get("sound");
+                boolean entryOk = true;
                 if (soundObj == null) {
                     warnings.add(prefix + ": sounds[" + i + "] has no sound key");
-                } else {
-                    validateSoundKey(soundObj.toString(), prefix + " sounds[" + i + "]", warnings);
+                    entryOk = false;
+                } else if (!validateSoundKey(soundObj.toString(), prefix + " sounds[" + i + "]", warnings)) {
+                    entryOk = false;
                 }
-                Object durationObj = entry.get("duration");
-                if (durationObj == null) {
+                if (entry.get("duration") == null) {
                     warnings.add(prefix + ": sounds[" + i + "] has no duration");
+                    entryOk = false;
                 }
+                if (entryOk) parseable = true;
             }
         }
 
         if (!section.contains("volume")) {
-            warnings.add(prefix + ": No volume specified");
+            warnings.add(prefix + ": No volume specified (region will be skipped)");
+            return false;
         }
 
         if (!section.contains("loop")) {
-            warnings.add(prefix + ": No loop specified");
+            warnings.add(prefix + ": No loop specified (region will be skipped)");
+            return false;
         }
 
         boolean loop = section.getBoolean("loop", false);
         if (hasSingleSound && !hasSoundsList && loop) {
             double duration = section.getDouble("duration", 0);
             if (duration <= 0) {
-                warnings.add(prefix + ": has loop=true but no valid duration");
+                warnings.add(prefix + ": has loop=true but no valid duration (region will be skipped)");
+                return false;
             }
         }
 
         String category = section.getString("category", "MUSIC");
+        Sound.Source resolvedSource;
         try {
-            Sound.Source.valueOf(category.toUpperCase());
+            resolvedSource = Sound.Source.valueOf(category.toUpperCase());
         } catch (IllegalArgumentException e) {
             warnings.add(prefix + ": Invalid sound category '" + category + "', will use MUSIC");
+            resolvedSource = Sound.Source.MUSIC;
+        }
+
+        if (stopVanillaMusicEnabled && resolvedSource == Sound.Source.MUSIC) {
+            warnings.add(prefix + ": stop-vanilla-music is enabled but category is MUSIC. "
+                    + "Vanilla music will only be suppressed at track boundaries. "
+                    + "Use category: RECORD (or any non-MUSIC source) for continuous suppression.");
         }
 
         String order = section.getString("order", "sequential");
@@ -194,7 +233,6 @@ public class ConfigManager {
             warnings.add(prefix + ": Invalid order '" + order + "', will use sequential");
         }
 
-        // Validate variants
         dev.oakheart.config.ConfigManager variantsSection = section.getSection("variants");
         if (variantsSection != null) {
             for (String variantName : variantsSection.getKeys(false)) {
@@ -219,17 +257,21 @@ public class ConfigManager {
                 }
             }
         }
+
+        return parseable;
     }
 
-    private void validateSoundKey(String sound, String context, List<String> warnings) {
+    private boolean validateSoundKey(String sound, String context, List<String> warnings) {
         if (sound == null || sound.isEmpty()) {
             warnings.add(context + ": Empty sound key");
-            return;
+            return false;
         }
         try {
             Key.key(sound);
+            return true;
         } catch (Exception e) {
             warnings.add(context + ": Invalid sound key '" + sound + "'");
+            return false;
         }
     }
 
@@ -253,7 +295,7 @@ public class ConfigManager {
     private Map<String, Map<String, RegionConfig>> loadRegionData() {
         Map<String, Map<String, RegionConfig>> result = new HashMap<>();
         dev.oakheart.config.ConfigManager regionsSection = config.getSection("regions");
-        if (regionsSection == null) return result;
+        if (regionsSection == null) return Map.of();
 
         for (String worldName : regionsSection.getKeys(false)) {
             dev.oakheart.config.ConfigManager worldSection = regionsSection.getSection(worldName);
@@ -268,11 +310,11 @@ public class ConfigManager {
             }
 
             if (!worldRegions.isEmpty()) {
-                result.put(worldName, worldRegions);
+                result.put(worldName, Map.copyOf(worldRegions));
             }
         }
 
-        return result;
+        return Map.copyOf(result);
     }
 
     private RegionConfig parseRegionConfig(String worldName, String regionId,
@@ -284,6 +326,7 @@ public class ConfigManager {
 
         if (!section.contains("volume") || !section.contains("loop")) return null;
 
+        String displayName = section.contains("display-name") ? section.getString("display-name") : null;
         float volume = (float) section.getDouble("volume", 1.0);
         boolean loop = section.getBoolean("loop", false);
 
@@ -306,7 +349,7 @@ public class ConfigManager {
 
         Map<VariantType, List<RegionTrack>> variants = parseVariants(section, loop);
 
-        return new RegionConfig(regionId, worldName, volume, loop, soundSource,
+        return new RegionConfig(regionId, worldName, displayName, volume, loop, soundSource,
                 configPriority, order, tracks, variants);
     }
 
@@ -341,7 +384,8 @@ public class ConfigManager {
             if (loop && durationTicks <= 0) return tracks;
 
             String name = section.getString("name");
-            tracks.add(new RegionTrack(soundKey, durationTicks, name));
+            Float volume = section.contains("track-volume") ? (float) section.getDouble("track-volume") : null;
+            tracks.add(new RegionTrack(soundKey, durationTicks, name, volume));
         }
 
         return tracks;
@@ -377,7 +421,20 @@ public class ConfigManager {
 
         Object nameObj = entry.get("name");
         String name = nameObj != null ? nameObj.toString() : null;
-        return new RegionTrack(soundKey, durationTicks, name);
+
+        Float volume = null;
+        Object volumeObj = entry.get("volume");
+        if (volumeObj instanceof Number num) {
+            volume = num.floatValue();
+        } else if (volumeObj != null) {
+            try {
+                volume = Float.parseFloat(volumeObj.toString());
+            } catch (NumberFormatException ignored) {
+                // leave null — fall back to region volume
+            }
+        }
+
+        return new RegionTrack(soundKey, durationTicks, name, volume);
     }
 
     private Map<VariantType, List<RegionTrack>> parseVariants(dev.oakheart.config.ConfigManager section,
@@ -437,7 +494,8 @@ public class ConfigManager {
             if (parentLoop && durationTicks <= 0) return tracks;
 
             String name = section.getString("name");
-            tracks.add(new RegionTrack(soundKey, durationTicks, name));
+            Float volume = section.contains("track-volume") ? (float) section.getDouble("track-volume") : null;
+            tracks.add(new RegionTrack(soundKey, durationTicks, name, volume));
         }
 
         return tracks;
@@ -457,6 +515,7 @@ public class ConfigManager {
         return config;
     }
 
+    /** Immutable view of the cached region data. */
     public Map<String, Map<String, RegionConfig>> getRegionData() {
         return regionData;
     }
